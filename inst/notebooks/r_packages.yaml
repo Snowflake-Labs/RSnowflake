@@ -1,0 +1,21 @@
+# R Package Configuration for RSnowflake Workspace Notebooks
+# Used by setup_r_environment.sh
+#
+# RSnowflake is a pure R DBI connector (httr2-based).
+# All deps come from conda-forge (pre-compiled, faster than CRAN source).
+
+r_version: ""
+
+conda_packages:
+  - r-base
+  - r-reticulate>=1.25
+  - r-dbi>=1.2.0
+  - r-httr2>=1.0.0
+  - r-jsonlite
+  - r-rlang>=1.0.0
+  - r-cli
+  - r-dbplyr>=2.3.0
+  - r-dplyr>=1.1.0
+  - r-nanoarrow
+
+cran_packages: []
