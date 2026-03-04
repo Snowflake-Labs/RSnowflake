@@ -5,10 +5,12 @@ Authors@R: c(
     person("Snowflake Inc.", role = c("aut", "cre", "cph"),
            email = "snowflake-r@snowflake.com"))
 Description: A DBI-compliant interface to Snowflake (<https://www.snowflake.com>).
-    Connects directly to Snowflake's SQL API via HTTPS, with no dependency on
-    ODBC, JDBC, or Python. Supports key-pair JWT, programmatic access token (PAT),
-    OAuth, and session token authentication. Optionally uses Apache Arrow for
-    high-performance data transfer.
+    Connects via Snowflake's SQL API v2 (HTTPS/JSON) as the universal baseline,
+    with no dependency on ODBC, JDBC, or Python. Supports key-pair JWT,
+    programmatic access token (PAT), OAuth, and session token authentication.
+    Optionally uses ADBC (Arrow Database Connectivity) as an accelerator for
+    bulk reads (Arrow-native) and writes (PUT + COPY INTO), activated
+    automatically when adbcsnowflake is installed.
 License: Apache License (>= 2) | file LICENSE
 URL: https://github.com/Snowflake-Labs/RSnowflake
 BugReports: https://github.com/Snowflake-Labs/RSnowflake/issues
@@ -28,9 +30,13 @@ Suggests:
     openssl,
     jose,
     RcppTOML,
+    RcppSimdJson,
     nanoarrow (>= 0.3.0),
+    adbcdrivermanager,
+    adbcsnowflake,
     dbplyr (>= 2.3.0),
     dplyr,
+    duckdb,
     blob (>= 1.2.0),
     hms (>= 1.0.0),
     bit64,

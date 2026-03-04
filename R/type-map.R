@@ -56,26 +56,20 @@ sf_convert_column <- function(x, sf_type, scale = 0L) {
 
 .convert_fixed <- function(x, scale) {
   if (scale == 0L) {
-    # Integer -- watch for overflow
-    nums <- suppressWarnings(as.numeric(x))
-    int_max <- .Machine$integer.max
-    if (any(!is.na(nums) & (nums > int_max | nums < -int_max))) {
-      return(nums)
-    }
-    as.integer(x)
+    result <- suppressWarnings(as.integer(x))
+    # Overflow produces NA where the original was not NA -- fall back to double
+    overflow <- is.na(result) & !is.na(x)
+    if (any(overflow)) return(as.double(x))
+    result
   } else {
     as.double(x)
   }
 }
 
 .convert_boolean <- function(x) {
-  out <- rep(NA, length(x))
-  out[!is.na(x) & x == "true"]  <- TRUE
-  out[!is.na(x) & x == "false"] <- FALSE
-  # SQL API also returns "1"/"0" for booleans in some contexts
-  out[!is.na(x) & x == "1"] <- TRUE
-  out[!is.na(x) & x == "0"] <- FALSE
-  as.logical(out)
+  # Single lookup: "true"/"1" -> TRUE, "false"/"0" -> FALSE, NA stays NA
+  lookup <- c("true" = TRUE, "false" = FALSE, "1" = TRUE, "0" = FALSE)
+  unname(lookup[x])
 }
 
 .convert_date <- function(x) {

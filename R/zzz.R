@@ -3,12 +3,20 @@
 .onLoad <- function(libname, pkgname) {
   op <- options()
   op_rsf <- list(
-    RSnowflake.timeout            = 600L,
-    RSnowflake.retry_max          = 3L,
-    RSnowflake.result_format      = "json",
-    RSnowflake.insert_batch_size  = 5000L,
-    RSnowflake.identifier_case    = "upper",
-    RSnowflake.verbose            = FALSE
+    RSnowflake.timeout              = 600L,
+    RSnowflake.retry_max            = 3L,
+    RSnowflake.result_format        = "json",
+    RSnowflake.insert_batch_size    = 16384L,
+    RSnowflake.upload_method        = "auto",
+    RSnowflake.identifier_case      = "upper",
+    RSnowflake.use_simdjson         = TRUE,
+    RSnowflake.parallel_fetch       = TRUE,
+    RSnowflake.fetch_workers        = 0L,
+    RSnowflake.use_session          = FALSE,
+    RSnowflake.use_native_arrow     = FALSE,
+    RSnowflake.verbose              = FALSE,
+    RSnowflake.backend              = "auto",
+    RSnowflake.adbc_write_threshold = 50000L
   )
   toset <- !(names(op_rsf) %in% names(op))
   if (any(toset)) options(op_rsf[toset])

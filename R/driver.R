@@ -129,12 +129,27 @@ setMethod("dbConnect", "SnowflakeDriver",
       .state    = .new_conn_state()
     )
 
+    # Optionally establish a persistent session for transactions & internal protocol
+    use_session <- isTRUE(getOption("RSnowflake.use_session", FALSE))
+    if (use_session) {
+      tryCatch({
+        session_info <- sf_session_login(account, auth)
+        con@.state$session <- session_info
+      }, error = function(e) {
+        cli_warn(c(
+          "!" = "Session login failed, falling back to stateless SQL API v2.",
+          "i" = conditionMessage(e)
+        ))
+      })
+    }
+
     # Validate the connection by querying the current session
     tryCatch({
       resp <- sf_api_submit(con, "SELECT CURRENT_VERSION() AS version")
       con@.state$session_info <- resp
+      session_note <- if (.has_session(con)) " (session-based)" else ""
       cli_inform(c(
-        "v" = "Connected to Snowflake account {.val {account}}.",
+        "v" = "Connected to Snowflake account {.val {account}}{session_note}.",
         "i" = "Database: {.val {database}}, Warehouse: {.val {warehouse}}"
       ))
     }, error = function(e) {

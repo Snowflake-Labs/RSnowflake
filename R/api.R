@@ -163,10 +163,10 @@ sf_api_cancel <- function(con, handle) {
   status <- httr2::resp_status(resp)
 
   if (status %in% c(200L, 202L)) {
-    return(httr2::resp_body_json(resp))
+    return(.parse_json_body(resp))
   }
 
-  err_body <- tryCatch(httr2::resp_body_json(resp), error = function(e) list())
+  err_body <- tryCatch(.parse_json_body(resp), error = function(e) list())
   sf_code <- err_body$code %||% as.character(status)
   sf_msg  <- err_body$message %||%
              tryCatch(httr2::resp_body_string(resp), error = function(e) "(no body)")
@@ -175,4 +175,20 @@ sf_api_cancel <- function(con, handle) {
     "x" = "Snowflake SQL API error (HTTP {status}, code {sf_code}).",
     "i" = sf_msg
   ))
+}
+
+#' Parse a JSON response body, using RcppSimdJson when available
+#'
+#' Uses fparse with default simplification for maximum speed.  Downstream
+#' parsers (sf_parse_metadata, .json_data_to_df) handle both the simplified
+#' structures (data.frame/matrix) from fparse and the nested-list structures
+#' from httr2::resp_body_json().
+#' @noRd
+.parse_json_body <- function(resp) {
+  use_simd <- isTRUE(getOption("RSnowflake.use_simdjson", TRUE))
+  if (use_simd && requireNamespace("RcppSimdJson", quietly = TRUE)) {
+    raw_bytes <- httr2::resp_body_raw(resp)
+    return(RcppSimdJson::fparse(rawToChar(raw_bytes)))
+  }
+  httr2::resp_body_json(resp)
 }

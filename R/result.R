@@ -100,13 +100,20 @@ setMethod("dbFetch", signature("SnowflakeResult"),
       }
 
       if (total_partitions > start_part) {
-        for (i in (start_part + 1L):total_partitions) {
-          part_resp <- sf_api_fetch_partition(
-            res@connection, meta$statement_handle, i - 1L
+        remaining <- seq.int(start_part, total_partitions - 1L)
+        use_parallel <- isTRUE(getOption("RSnowflake.parallel_fetch", TRUE)) &&
+                        length(remaining) > 1L
+
+        if (use_parallel) {
+          rest <- sf_fetch_partitions_parallel(
+            res@connection, meta$statement_handle, remaining, meta
           )
-          part_parsed <- sf_parse_response(part_resp)
-          all_parts[[length(all_parts) + 1L]] <- part_parsed$data
+        } else {
+          rest <- .fetch_partitions_sequential(
+            res@connection, meta$statement_handle, remaining, meta
+          )
         }
+        all_parts <- c(all_parts, rest)
       }
 
       st$fetched <- TRUE

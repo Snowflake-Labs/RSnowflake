@@ -36,6 +36,7 @@ setClass("SnowflakeConnection",
   env$valid          <- TRUE
   env$in_transaction <- FALSE
   env$session_info   <- NULL
+  env$adbc           <- NULL
   env
 }
 
@@ -63,6 +64,17 @@ setMethod("dbIsValid", "SnowflakeConnection", function(dbObj, ...) {
 #' @param conn A [SnowflakeConnection-class] object.
 #' @export
 setMethod("dbDisconnect", "SnowflakeConnection", function(conn, ...) {
+  if (.has_adbc(conn)) {
+    .adbc_cleanup(conn@.state$adbc)
+    conn@.state$adbc <- NULL
+  }
+  if (.has_session(conn)) {
+    tryCatch(
+      sf_session_delete(conn@account, conn@.state$session),
+      error = function(e) NULL
+    )
+    conn@.state$session <- NULL
+  }
   .on_connection_closed(conn)
   conn@.state$valid <- FALSE
   invisible(TRUE)
@@ -147,21 +159,51 @@ setMethod("dbSendStatement", signature("SnowflakeConnection", "character"),
 setMethod("dbGetQuery", signature("SnowflakeConnection", "character"),
   function(conn, statement, params = NULL, ...) {
     .check_valid(conn)
+
+    # ADBC fast path for parameterless SELECT queries
+    backend <- getOption("RSnowflake.backend", "auto")
+    if (is.null(params) && backend %in% c("adbc", "auto")) {
+      adbc <- .ensure_adbc(conn)
+      if (!is.null(adbc)) {
+        adbc_result <- tryCatch(
+          .adbc_get_query(adbc, statement),
+          error = function(e) {
+            if (!identical(backend, "auto")) {
+              cli_warn(c(
+                "!" = "ADBC query failed, falling back to REST API.",
+                "i" = conditionMessage(e)
+              ))
+            }
+            NULL
+          }
+        )
+        if (!is.null(adbc_result)) return(adbc_result)
+      }
+    }
+
+    # REST API v2 path
     bindings <- if (!is.null(params)) .params_to_bindings(params) else NULL
     resp <- sf_api_submit(conn, statement, bindings = bindings)
     parsed <- sf_parse_response(resp)
     meta <- parsed$meta
 
     if (meta$num_partitions > 1L) {
-      parts <- vector("list", meta$num_partitions)
-      parts[[1L]] <- parsed$data
+      remaining_indices <- seq.int(1L, meta$num_partitions - 1L)
 
-      for (i in 2L:meta$num_partitions) {
-        part_resp <- sf_api_fetch_partition(conn, meta$statement_handle, i - 1L)
-        part_parsed <- sf_parse_response(part_resp)
-        parts[[i]] <- part_parsed$data
+      use_parallel <- isTRUE(getOption("RSnowflake.parallel_fetch", TRUE)) &&
+                      length(remaining_indices) > 1L
+
+      if (use_parallel) {
+        rest <- sf_fetch_partitions_parallel(
+          conn, meta$statement_handle, remaining_indices, meta
+        )
+      } else {
+        rest <- .fetch_partitions_sequential(
+          conn, meta$statement_handle, remaining_indices, meta
+        )
       }
 
+      parts <- c(list(parsed$data), rest)
       return(do.call(rbind, parts))
     }
 
@@ -183,15 +225,14 @@ setMethod("dbExecute", signature("SnowflakeConnection", "character"),
 # ---------------------------------------------------------------------------
 # DBI Arrow methods
 #
-# NOTE: These methods exist for interface compatibility with packages and
-# workflows that expect DBI Arrow methods.  Because the Snowflake SQL API v2
-# only returns JSON, data is fetched through the normal JSON path and then
-# converted to a nanoarrow array stream on the client side.  This adds a
-# small overhead versus dbGetQuery/dbFetch and provides no performance
-# benefit.  For large result sets, prefer dbGetQuery() or dbFetch().
-#
-# Native Arrow transport (server-side Arrow IPC) would require the internal
-# Snowflake GS protocol and is planned as a future opt-in enhancement.
+# Priority order for Arrow results:
+# 1. ADBC (when installed) -- true Arrow-native via the Go driver hitting
+#    the public endpoint.  Works in Workspace with PAT auth.
+# 2. Internal GS protocol (when a session is active and
+#    use_native_arrow = TRUE) -- Arrow IPC from the server.  Does NOT work
+#    in Workspace; the GS session endpoint rejects PAT/SPCS tokens.
+# 3. REST API v2 JSON with client-side Arrow conversion (universal fallback).
+#    Note: SQL API v2 Arrow result format is gated internally and NOT GA.
 # ---------------------------------------------------------------------------
 
 #' @rdname SnowflakeConnection-class
@@ -200,7 +241,34 @@ setMethod("dbGetQueryArrow", signature("SnowflakeConnection", "character"),
   function(conn, statement, params = NULL, ...) {
     rlang::check_installed("nanoarrow", reason = "for Arrow result format")
     .check_valid(conn)
+
+    # ADBC Arrow path (preferred -- true server-side Arrow)
+    backend <- getOption("RSnowflake.backend", "auto")
+    if (is.null(params) && backend %in% c("adbc", "auto")) {
+      adbc <- .ensure_adbc(conn)
+      if (!is.null(adbc)) {
+        adbc_stream <- tryCatch(
+          .adbc_get_query_arrow(adbc, statement),
+          error = function(e) NULL
+        )
+        if (!is.null(adbc_stream)) return(adbc_stream)
+      }
+    }
+
     bindings <- if (!is.null(params)) .params_to_bindings(params) else NULL
+
+    # Native Arrow path via internal GS protocol
+    if (.can_use_native_arrow(conn)) {
+      resp <- tryCatch(
+        sf_internal_submit_arrow(conn, statement, bindings = bindings),
+        error = function(e) NULL
+      )
+      if (!is.null(resp)) {
+        return(sf_fetch_all_native_arrow(conn, resp))
+      }
+    }
+
+    # REST API v2 JSON → client-side Arrow conversion
     resp <- sf_api_submit(conn, statement, bindings = bindings)
     meta <- sf_parse_metadata(resp)
     sf_fetch_all_as_arrow_stream(conn, resp, meta)
@@ -386,12 +454,10 @@ setMethod("dbWriteTable",
       cli_abort("Table {.val {name}} already exists. Use {.arg overwrite} or {.arg append}.")
     }
 
-    if (overwrite && exists) {
+    if (overwrite) {
       dbExecute(conn, paste0("DROP TABLE IF EXISTS ", id))
-      exists <- FALSE
-    }
-
-    if (!exists) {
+      dbCreateTable(conn, name, value)
+    } else if (!exists) {
       dbCreateTable(conn, name, value)
     }
 
@@ -646,13 +712,64 @@ setMethod("dbDataType", "SnowflakeConnection", function(dbObj, obj, ...) {
   bindings
 }
 
-#' Insert data.frame rows via batched INSERT VALUES
+#' Insert data.frame rows, routing to the best available backend
 #'
-#' Uses named columns in the INSERT statement for robustness when column
-#' order may differ between the data.frame and the table.  Batch size is
-#' controlled by `getOption("RSnowflake.insert_batch_size")` (default 5000).
+#' Routing order:
+#' - "auto" (default): ADBC bulk ingest when available AND cell count exceeds
+#'   `RSnowflake.adbc_write_threshold`, otherwise literal SQL INSERT.
+#' - "adbc": force ADBC; falls back to literal if ADBC unavailable.
+#' - "literal": SQL string INSERT (fastest REST-only path).
+#' - "bind": DEPRECATED. Bind-parameter INSERT -- slower than literal because
+#'   the SQL API v2 has no array-binding support (confirmed by Snowflake eng).
 #' @noRd
 .insert_data <- function(conn, table_id, df) {
+  method <- getOption("RSnowflake.upload_method", "auto")
+  cells <- nrow(df) * ncol(df)
+  threshold <- as.integer(
+    getOption("RSnowflake.adbc_write_threshold", 50000L)
+  )
+
+  if (identical(method, "auto") && cells >= threshold) {
+    adbc <- .ensure_adbc(conn)
+    if (!is.null(adbc)) {
+      return(.insert_data_adbc(adbc, table_id, df))
+    }
+  }
+
+  if (identical(method, "adbc")) {
+    adbc <- .ensure_adbc(conn)
+    if (!is.null(adbc)) {
+      return(.insert_data_adbc(adbc, table_id, df))
+    }
+    cli_warn("ADBC backend unavailable, falling back to literal INSERT.")
+  }
+
+  if (identical(method, "bind")) {
+    cli_warn(c(
+      "!" = "{.code upload_method = \"bind\"} is deprecated.",
+      "i" = "SQL API v2 has no array-binding support; bind-parameter INSERT is slower than literal INSERT.",
+      "i" = "Use {.code \"auto\"} (default) or {.code \"literal\"} instead."
+    ))
+    return(.insert_data_bind(conn, table_id, df))
+  }
+
+  .insert_data_literal(conn, table_id, df)
+}
+
+
+#' Thin wrapper for ADBC bulk ingest called from .insert_data
+#'
+#' Strips DBI quoting from the table identifier before handing off to
+#' the ADBC backend, which expects an unquoted table name.
+#' @noRd
+.insert_data_adbc <- function(adbc, table_id, df) {
+  plain_name <- gsub('"', "", table_id)
+  .adbc_write_table(adbc, plain_name, df, mode = "append")
+}
+
+#' Legacy INSERT path: inline SQL string literals
+#' @noRd
+.insert_data_literal <- function(conn, table_id, df) {
   batch_size <- getOption("RSnowflake.insert_batch_size", 5000L)
   batch_size <- as.integer(batch_size)
   n <- nrow(df)

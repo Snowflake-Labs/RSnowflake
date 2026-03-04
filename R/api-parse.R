@@ -22,6 +22,9 @@ sf_parse_response <- function(resp_body) {
 
 #' Extract column metadata from resultSetMetaData
 #'
+#' Handles both the nested-list format from httr2::resp_body_json() and the
+#' simplified data.frame format from RcppSimdJson::fparse().
+#'
 #' @param resp_body Parsed JSON body.
 #' @returns A list with `num_rows`, `num_partitions`, `columns` (data.frame
 #'   of name, type, nullable, scale, precision, length).
@@ -42,21 +45,36 @@ sf_parse_metadata <- function(resp_body) {
   }
 
   row_types <- rsmd$rowType
-  if (is.null(row_types)) row_types <- list()
 
-  cols <- data.frame(
-    name     = vapply(row_types, function(x) x$name %||% "", character(1)),
-    type     = vapply(row_types, function(x) tolower(x$type %||% "text"), character(1)),
-    nullable = vapply(row_types, function(x) isTRUE(x$nullable), logical(1)),
-    scale    = vapply(row_types, function(x) as.integer(x$scale %||% 0L), integer(1)),
-    precision = vapply(row_types, function(x) as.integer(x$precision %||% 0L), integer(1)),
-    stringsAsFactors = FALSE
-  )
+  if (is.data.frame(row_types)) {
+    # fparse simplified the array-of-objects into a data.frame
+    cols <- data.frame(
+      name      = as.character(row_types$name),
+      type      = tolower(as.character(row_types$type)),
+      nullable  = as.logical(row_types$nullable),
+      scale     = as.integer(row_types$scale),
+      precision = as.integer(row_types$precision),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    # httr2/jsonlite returns a list of named lists
+    if (is.null(row_types)) row_types <- list()
+    cols <- data.frame(
+      name     = vapply(row_types, function(x) x$name %||% "", character(1)),
+      type     = vapply(row_types, function(x) tolower(x$type %||% "text"), character(1)),
+      nullable = vapply(row_types, function(x) isTRUE(x$nullable), logical(1)),
+      scale    = vapply(row_types, function(x) as.integer(x$scale %||% 0L), integer(1)),
+      precision = vapply(row_types, function(x) as.integer(x$precision %||% 0L), integer(1)),
+      stringsAsFactors = FALSE
+    )
+  }
 
   n_partitions <- 0L
   part_info <- rsmd$partitionInfo
   if (!is.null(part_info)) {
-    n_partitions <- length(part_info)
+    # fparse simplifies the array-of-objects to a data.frame (use nrow),
+    # while httr2/jsonlite returns a list-of-lists (use length).
+    n_partitions <- if (is.data.frame(part_info)) nrow(part_info) else length(part_info)
   }
 
   list(
@@ -71,11 +89,12 @@ sf_parse_metadata <- function(resp_body) {
 
 #' Convert the data array from JSON response into an R data.frame
 #'
-#' The SQL API v2 returns data as a list of row arrays, where each
-#' value is a string (or null). We convert to the appropriate R type
-#' based on column metadata.
+#' Handles three formats produced by different JSON parsers:
+#'   - character matrix  (fparse with full simplification, no NULLs)
+#'   - data.frame        (fparse, when inner arrays look homogeneous)
+#'   - list of lists      (httr2/jsonlite, or fparse with NULLs)
 #'
-#' @param raw_data List of row arrays.
+#' @param raw_data Parsed data from the JSON response body.
 #' @param meta Metadata from sf_parse_metadata().
 #' @returns A data.frame.
 #' @noRd
@@ -85,21 +104,36 @@ sf_parse_metadata <- function(resp_body) {
 
   if (ncols == 0L) return(data.frame())
 
-  # Pre-allocate column vectors
-  nrows <- length(raw_data)
+  if (is.matrix(raw_data)) {
+    # fparse simplified to character matrix -- fastest path
+    mat <- raw_data
+    storage.mode(mat) <- "character"
+  } else if (is.data.frame(raw_data)) {
+    # fparse simplified to data.frame -- coerce to character matrix
+    mat <- as.matrix(raw_data)
+    storage.mode(mat) <- "character"
+  } else {
+    # list-of-lists from httr2/jsonlite (or fparse when NULLs prevent
+    # simplification).  Transpose to character matrix in one pass.
+    mat <- do.call(rbind, lapply(raw_data, function(row) {
+      vapply(row, function(v) {
+        if (is.null(v)) NA_character_ else as.character(v)
+      }, character(1))
+    }))
+  }
+
+  # Ensure mat is 2-dimensional (single-row results can lose dim)
+  if (is.null(dim(mat))) {
+    mat <- matrix(mat, nrow = 1L)
+  }
+
   columns <- vector("list", ncols)
   names(columns) <- col_info$name
 
   for (j in seq_len(ncols)) {
-    sf_type <- col_info$type[j]
-    scale   <- col_info$scale[j]
-
-    raw_col <- vapply(raw_data, function(row) {
-      val <- row[[j]]
-      if (is.null(val)) NA_character_ else as.character(val)
-    }, character(1))
-
-    columns[[j]] <- sf_convert_column(raw_col, sf_type, scale)
+    columns[[j]] <- sf_convert_column(
+      mat[, j], col_info$type[j], col_info$scale[j]
+    )
   }
 
   as.data.frame(columns, stringsAsFactors = FALSE, check.names = FALSE)

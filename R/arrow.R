@@ -1,17 +1,16 @@
 # Arrow Result Support (via nanoarrow)
 # =============================================================================
-# The Snowflake SQL API v2 only returns JSON responses.  Arrow transport is
-# not supported on the public REST API.  We provide DBI Arrow methods
-# (dbGetQueryArrow, dbFetchArrow, etc.) by fetching JSON data through the
-# normal path, then converting R data.frames to nanoarrow array streams on
-# the client side.  This gives users the standard DBI Arrow interface while
-# working within the constraints of SQL API v2.
+# Two modes:
 #
-# PERFORMANCE NOTE: This client-side conversion adds overhead compared to
-# the standard dbGetQuery/dbFetch path and offers no performance benefit.
-# It exists purely for DBI interface compatibility.  Native Arrow transport
-# (server-side Arrow IPC via the internal Snowflake GS protocol) is planned
-# as a future opt-in enhancement -- see architecture.md section 11.
+# 1. Client-side conversion (SQL API v2): Fetch JSON data through the normal
+#    path, then convert R data.frames to nanoarrow array streams.  This adds
+#    overhead compared to dbGetQuery and exists for DBI interface compatibility.
+#
+# 2. Native Arrow transport (session + internal protocol): When a session is
+#    active and RSnowflake.use_native_arrow is TRUE, queries are submitted via
+#    the internal protocol requesting Arrow IPC format.  Results arrive as
+#    base64-encoded Arrow IPC (first partition) and pre-signed cloud URLs
+#    (subsequent partitions).  This provides 5-10x improvement for large results.
 #
 # All nanoarrow calls are guarded with rlang::check_installed() since
 # nanoarrow is in Suggests.
@@ -28,25 +27,25 @@
 sf_fetch_all_as_arrow_stream <- function(con, resp_body, meta) {
   rlang::check_installed("nanoarrow", reason = "for Arrow result format")
 
-  handle   <- meta$statement_handle
-  n_parts  <- max(meta$num_partitions, 1L)
+  handle  <- meta$statement_handle
+  n_parts <- max(meta$num_partitions, 1L)
 
-  frames <- vector("list", n_parts)
-  for (i in seq_len(n_parts)) {
-    if (i == 1L) {
-      parsed <- sf_parse_response(resp_body)
-      frames[[i]] <- parsed$data
-    } else {
-      part_resp <- sf_api_fetch_partition(con, handle, i - 1L)
-      part_parsed <- sf_parse_response(part_resp)
-      frames[[i]] <- part_parsed$data
-    }
-  }
+  parsed <- sf_parse_response(resp_body)
+  first_frame <- parsed$data
 
-  combined <- if (length(frames) == 1L) {
-    frames[[1L]]
+  if (n_parts <= 1L) {
+    combined <- first_frame
   } else {
-    do.call(rbind, frames)
+    remaining <- seq.int(1L, n_parts - 1L)
+    use_parallel <- isTRUE(getOption("RSnowflake.parallel_fetch", TRUE)) &&
+                    length(remaining) > 1L
+
+    if (use_parallel) {
+      rest <- sf_fetch_partitions_parallel(con, handle, remaining, meta)
+    } else {
+      rest <- .fetch_partitions_sequential(con, handle, remaining, meta)
+    }
+    combined <- do.call(rbind, c(list(first_frame), rest))
   }
 
   if (is.null(combined) || nrow(combined) == 0L) {
@@ -73,8 +72,7 @@ sf_fetch_partition_as_arrow_stream <- function(con, resp_body, meta, partition) 
     df <- parsed$data
   } else {
     part_resp <- sf_api_fetch_partition(con, meta$statement_handle, partition)
-    part_parsed <- sf_parse_response(part_resp)
-    df <- part_parsed$data
+    df <- .parse_partition_data(part_resp, meta)
   }
 
   if (is.null(df) || nrow(df) == 0L) {

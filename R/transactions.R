@@ -1,15 +1,15 @@
 # Transaction Support
 # =============================================================================
-# The SQL API v2 (/api/v2/statements) is stateless per-request and does not
-# support multi-statement transactions (BEGIN/COMMIT/ROLLBACK are rejected
-# with code 391911). Session-based transactions require the internal
-# /queries/v1/ endpoint, which will be added in a future release.
+# When a session-based connection is active, transactions are supported via
+# the internal /queries/v1/ endpoint (BEGIN/COMMIT/ROLLBACK).
+# Without a session, the SQL API v2 is stateless per-request and transactions
+# are rejected with an informative error.
 
 .txn_not_supported <- function() {
   cli_abort(c(
-    "Transactions are not yet supported via the SQL API v2.",
-    "i" = "The Snowflake SQL API v2 is stateless per-request.",
-    "i" = "Session-based transaction support will be added in a future release."
+    "Transactions require a session-based connection.",
+    "i" = "Set {.code options(RSnowflake.use_session = TRUE)} before connecting.",
+    "i" = "Without a session, the SQL API v2 is stateless per-request."
   ))
 }
 
@@ -17,21 +17,39 @@
 #' @export
 setMethod("dbBegin", "SnowflakeConnection", function(conn, ...) {
   .check_valid(conn)
-  .txn_not_supported()
+  if (!.has_session(conn)) .txn_not_supported()
+  if (conn@.state$in_transaction) {
+    cli_abort("A transaction is already active on this connection.")
+  }
+  sf_internal_execute(conn, "BEGIN")
+  conn@.state$in_transaction <- TRUE
+  invisible(TRUE)
 })
 
 #' @rdname SnowflakeConnection-class
 #' @export
 setMethod("dbCommit", "SnowflakeConnection", function(conn, ...) {
   .check_valid(conn)
-  .txn_not_supported()
+  if (!.has_session(conn)) .txn_not_supported()
+  if (!conn@.state$in_transaction) {
+    cli_abort("No active transaction to commit.")
+  }
+  sf_internal_execute(conn, "COMMIT")
+  conn@.state$in_transaction <- FALSE
+  invisible(TRUE)
 })
 
 #' @rdname SnowflakeConnection-class
 #' @export
 setMethod("dbRollback", "SnowflakeConnection", function(conn, ...) {
   .check_valid(conn)
-  .txn_not_supported()
+  if (!.has_session(conn)) .txn_not_supported()
+  if (!conn@.state$in_transaction) {
+    cli_abort("No active transaction to roll back.")
+  }
+  sf_internal_execute(conn, "ROLLBACK")
+  conn@.state$in_transaction <- FALSE
+  invisible(TRUE)
 })
 
 #' @rdname SnowflakeConnection-class
@@ -40,6 +58,19 @@ setMethod("dbRollback", "SnowflakeConnection", function(conn, ...) {
 setMethod("dbWithTransaction", "SnowflakeConnection",
   function(conn, code, ...) {
     .check_valid(conn)
-    .txn_not_supported()
+    if (!.has_session(conn)) .txn_not_supported()
+
+    dbBegin(conn)
+    tryCatch(
+      {
+        result <- force(code)
+        dbCommit(conn)
+        result
+      },
+      error = function(e) {
+        tryCatch(dbRollback(conn), error = function(e2) NULL)
+        stop(e)
+      }
+    )
   }
 )
