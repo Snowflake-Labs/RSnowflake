@@ -143,21 +143,50 @@ setMethod("dbConnect", "SnowflakeDriver",
       })
     }
 
-    # Validate the connection by querying the current session
-    tryCatch({
-      resp <- sf_api_submit(con, "SELECT CURRENT_VERSION() AS version")
-      con@.state$session_info <- resp
-      session_note <- if (.has_session(con)) " (session-based)" else ""
-      cli_inform(c(
-        "v" = "Connected to Snowflake account {.val {account}}{session_note}.",
-        "i" = "Database: {.val {database}}, Warehouse: {.val {warehouse}}"
-      ))
-    }, error = function(e) {
-      cli_abort(c(
-        "x" = "Failed to connect to Snowflake account {.val {account}}.",
-        "x" = conditionMessage(e)
-      ))
-    })
+    # Validate the connection.
+    #
+    # In Workspace (SPCS OAuth):
+    # - ADBC installed: all SQL via Go driver on SNOWFLAKE_HOST (Arrow-native).
+    # - No ADBC: REST API v2 on SNOWFLAKE_HOST with Bearer + SPCS token.
+    #   sf_host() routes OAuth to the internal gateway automatically.
+    #
+    # Outside Workspace: REST API v2 on the public endpoint as before.
+    if (auth$type == "oauth" && .adbc_packages_available()) {
+      tryCatch({
+        adbc <- .init_adbc_backend(con)
+        if (!is.null(adbc)) {
+          con@.state$adbc <- adbc
+          cli_inform(c(
+            "v" = "Connected to Snowflake account {.val {account}} (ADBC, SPCS OAuth).",
+            "i" = "Database: {.val {database}}, Warehouse: {.val {warehouse}}"
+          ))
+        } else {
+          cli_abort("ADBC backend init returned NULL.")
+        }
+      }, error = function(e) {
+        cli_abort(c(
+          "x" = "Failed to connect to Snowflake account {.val {account}} via ADBC.",
+          "x" = conditionMessage(e),
+          "i" = "Verify SNOWFLAKE_HOST is set and /snowflake/session/token exists."
+        ))
+      })
+    } else {
+      tryCatch({
+        resp <- sf_api_submit(con, "SELECT CURRENT_VERSION() AS version")
+        con@.state$session_info <- resp
+        mode <- if (auth$type == "oauth") " (REST, SPCS OAuth)" else ""
+        session_note <- if (.has_session(con)) " (session-based)" else ""
+        cli_inform(c(
+          "v" = "Connected to Snowflake account {.val {account}}{mode}{session_note}.",
+          "i" = "Database: {.val {database}}, Warehouse: {.val {warehouse}}"
+        ))
+      }, error = function(e) {
+        cli_abort(c(
+          "x" = "Failed to connect to Snowflake account {.val {account}}.",
+          "x" = conditionMessage(e)
+        ))
+      })
+    }
 
     .on_connection_opened(con)
     con

@@ -81,6 +81,18 @@ setMethod("dbFetch", signature("SnowflakeResult"),
       cli_abort("Query has bind placeholders. Call {.fn dbBind} first.")
     }
 
+    # ADBC-produced results carry a pre-fetched data.frame
+    if (!is.null(st$adbc_data) && !st$fetched) {
+      df <- st$adbc_data
+      if (n > 0 && nrow(df) > n) {
+        df <- df[seq_len(n), , drop = FALSE]
+      }
+      st$fetched <- TRUE
+      st$current_partition <- 1L
+      st$rows_fetched <- st$rows_fetched + nrow(df)
+      return(df)
+    }
+
     meta <- .get_meta(res)
     resp_body <- .get_resp_body(res)
     total_partitions <- max(meta$num_partitions, 1L)

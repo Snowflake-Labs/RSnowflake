@@ -82,27 +82,24 @@
 #' @noRd
 .pane_list_objects <- function(conn, database, schema) {
   if (is.null(database)) {
-    resp <- sf_api_submit(conn, "SHOW DATABASES")
-    parsed <- sf_parse_response(resp)
-    if (nrow(parsed$data) == 0L) return(data.frame(name = character(0), type = character(0)))
-    name_col <- which(tolower(parsed$meta$columns$name) == "name")
-    return(data.frame(name = parsed$data[[name_col]], type = "database"))
+    df <- dbGetQuery(conn, "SHOW DATABASES")
+    if (nrow(df) == 0L) return(data.frame(name = character(0), type = character(0)))
+    name_col <- which(tolower(names(df)) == "name")
+    return(data.frame(name = df[[name_col]], type = "database"))
   }
   if (is.null(schema)) {
     qdb <- dbQuoteIdentifier(conn, database)
-    resp <- sf_api_submit(conn, paste0("SHOW SCHEMAS IN DATABASE ", qdb))
-    parsed <- sf_parse_response(resp)
-    if (nrow(parsed$data) == 0L) return(data.frame(name = character(0), type = character(0)))
-    name_col <- which(tolower(parsed$meta$columns$name) == "name")
-    return(data.frame(name = parsed$data[[name_col]], type = "schema"))
+    df <- dbGetQuery(conn, paste0("SHOW SCHEMAS IN DATABASE ", qdb))
+    if (nrow(df) == 0L) return(data.frame(name = character(0), type = character(0)))
+    name_col <- which(tolower(names(df)) == "name")
+    return(data.frame(name = df[[name_col]], type = "schema"))
   }
   qdb <- dbQuoteIdentifier(conn, database)
   qsch <- dbQuoteIdentifier(conn, schema)
-  resp <- sf_api_submit(conn, paste0("SHOW TABLES IN SCHEMA ", qdb, ".", qsch))
-  parsed <- sf_parse_response(resp)
-  if (nrow(parsed$data) == 0L) return(data.frame(name = character(0), type = character(0)))
-  name_col <- which(tolower(parsed$meta$columns$name) == "name")
-  data.frame(name = parsed$data[[name_col]], type = "table")
+  df <- dbGetQuery(conn, paste0("SHOW TABLES IN SCHEMA ", qdb, ".", qsch))
+  if (nrow(df) == 0L) return(data.frame(name = character(0), type = character(0)))
+  name_col <- which(tolower(names(df)) == "name")
+  data.frame(name = df[[name_col]], type = "table")
 }
 
 #' List columns for the Connections Pane column preview
@@ -113,19 +110,18 @@
     dbQuoteIdentifier(conn, schema), ".",
     dbQuoteIdentifier(conn, table)
   )
-  resp <- sf_api_submit(conn, paste0("SHOW COLUMNS IN TABLE ", fqn))
-  parsed <- sf_parse_response(resp)
-  if (nrow(parsed$data) == 0L) {
+  df <- dbGetQuery(conn, paste0("SHOW COLUMNS IN TABLE ", fqn))
+  if (nrow(df) == 0L) {
     return(data.frame(name = character(0), type = character(0)))
   }
-  name_col <- which(tolower(parsed$meta$columns$name) == "column_name")
-  type_col <- which(tolower(parsed$meta$columns$name) == "data_type")
+  name_col <- which(tolower(names(df)) == "column_name")
+  type_col <- which(tolower(names(df)) == "data_type")
   if (length(name_col) == 0L) {
     return(data.frame(name = character(0), type = character(0)))
   }
   data.frame(
-    name = parsed$data[[name_col]],
-    type = if (length(type_col) > 0L) parsed$data[[type_col]] else "unknown"
+    name = df[[name_col]],
+    type = if (length(type_col) > 0L) df[[type_col]] else "unknown"
   )
 }
 

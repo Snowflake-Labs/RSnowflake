@@ -77,6 +77,14 @@ test_that(".adbc_auth_args maps token auth as PAT", {
   expect_equal(args[["adbc.snowflake.sql.auth_type"]], "auth_pat")
 })
 
+test_that(".adbc_auth_args maps oauth auth to auth_oauth", {
+  con <- .test_conn()
+  con@.auth <- list(type = "oauth", token = "spcs_oauth_token", token_type = "OAUTH")
+  args <- .adbc_auth_args(con)
+  expect_equal(args[["adbc.snowflake.sql.auth_type"]], "auth_oauth")
+  expect_equal(args[["adbc.snowflake.sql.client_option.auth_token"]], "spcs_oauth_token")
+})
+
 test_that(".adbc_auth_args returns empty list for unknown auth type", {
   con <- .test_conn()
   con@.auth <- list(type = "unknown", token = "x")
@@ -130,6 +138,22 @@ test_that(".ensure_adbc returns NULL when packages unavailable", {
   )
 })
 
+test_that(".ensure_adbc caches failed init and does not retry", {
+  con <- .test_conn()
+  init_count <- 0L
+  mockr::with_mock(
+    .init_adbc_backend = function(conn) { init_count <<- init_count + 1L; NULL },
+    {
+      withr::with_options(list(RSnowflake.backend = "auto"), {
+        expect_null(.ensure_adbc(con))
+        expect_null(.ensure_adbc(con))
+        expect_equal(init_count, 1L)
+        expect_identical(con@.state$adbc, "failed")
+      })
+    }
+  )
+})
+
 # ---------------------------------------------------------------------------
 # Write routing (.insert_data)
 # ---------------------------------------------------------------------------
@@ -143,12 +167,15 @@ test_that(".insert_data routes to literal for small data in auto mode", {
       list()
     },
     {
-      withr::with_options(list(
-        RSnowflake.upload_method = "auto",
-        RSnowflake.adbc_write_threshold = 1000L
-      ), {
-        df <- data.frame(x = 1:10)
-        .insert_data(con, '"T"', df)
+      withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
+        withr::with_options(list(
+          RSnowflake.upload_method = "auto",
+          RSnowflake.bulk_write_threshold = 1000L,
+          RSnowflake.adbc_write_threshold = 1000L
+        ), {
+          df <- data.frame(x = 1:10)
+          .insert_data(con, '"T"', df)
+        })
       })
     }
   )
@@ -156,7 +183,7 @@ test_that(".insert_data routes to literal for small data in auto mode", {
   expect_no_match(captured_sql, "\\?")
 })
 
-test_that(".insert_data attempts ADBC for large data in auto mode", {
+test_that(".insert_data attempts ADBC for large data in auto mode (outside Workspace)", {
   con <- .test_conn()
   adbc_called <- FALSE
   fake_adbc <- list(db = "db", con = "con")
@@ -168,19 +195,22 @@ test_that(".insert_data attempts ADBC for large data in auto mode", {
       invisible(TRUE)
     },
     {
-      withr::with_options(list(
-        RSnowflake.upload_method = "auto",
-        RSnowflake.adbc_write_threshold = 10L
-      ), {
-        df <- data.frame(a = 1:5, b = 6:10, c = 11:15)
-        .insert_data(con, '"T"', df)
+      withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
+        withr::with_options(list(
+          RSnowflake.upload_method = "auto",
+          RSnowflake.bulk_write_threshold = 10L,
+          RSnowflake.adbc_write_threshold = 10L
+        ), {
+          df <- data.frame(a = 1:5, b = 6:10, c = 11:15)
+          .insert_data(con, '"T"', df)
+        })
       })
     }
   )
   expect_true(adbc_called)
 })
 
-test_that(".insert_data stays on literal when below ADBC threshold in auto mode", {
+test_that(".insert_data stays on literal when below threshold in auto mode", {
   con <- .test_conn()
   fake_adbc <- list(db = "db", con = "con")
   con@.state$adbc <- fake_adbc
@@ -191,12 +221,15 @@ test_that(".insert_data stays on literal when below ADBC threshold in auto mode"
     .adbc_write_table = function(...) { adbc_called <<- TRUE },
     sf_api_submit = function(...) { literal_called <<- TRUE; list() },
     {
-      withr::with_options(list(
-        RSnowflake.upload_method = "auto",
-        RSnowflake.adbc_write_threshold = 999999L
-      ), {
-        df <- data.frame(x = 1:10)
-        .insert_data(con, '"T"', df)
+      withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
+        withr::with_options(list(
+          RSnowflake.upload_method = "auto",
+          RSnowflake.bulk_write_threshold = 999999L,
+          RSnowflake.adbc_write_threshold = 999999L
+        ), {
+          df <- data.frame(x = 1:10)
+          .insert_data(con, '"T"', df)
+        })
       })
     }
   )
@@ -257,6 +290,156 @@ test_that(".insert_data_adbc strips DBI quoting from table_id", {
 })
 
 # ---------------------------------------------------------------------------
+# Snowpark write routing
+# ---------------------------------------------------------------------------
+
+test_that(".insert_data routes to Snowpark in Workspace auto mode for large data", {
+  con <- .test_conn()
+  snowpark_called <- FALSE
+
+  mockr::with_mock(
+    .snowpark_write_available = function() TRUE,
+    .insert_data_snowpark = function(conn, table_id, df) {
+      snowpark_called <<- TRUE
+      invisible(TRUE)
+    },
+    {
+      withr::with_envvar(c(SNOWFLAKE_HOST = "fake-spcs.snowflakecomputing.app"), {
+        withr::with_options(list(
+          RSnowflake.upload_method = "auto",
+          RSnowflake.bulk_write_threshold = 10L
+        ), {
+          df <- data.frame(a = 1:5, b = 6:10, c = 11:15)
+          .insert_data(con, '"T"', df)
+        })
+      })
+    }
+  )
+  expect_true(snowpark_called)
+})
+
+test_that(".insert_data falls back to ADBC in Workspace when Snowpark unavailable", {
+  con <- .test_conn()
+  fake_adbc <- list(db = "db", con = "con")
+  con@.state$adbc <- fake_adbc
+  adbc_called <- FALSE
+
+  mockr::with_mock(
+    .snowpark_write_available = function() FALSE,
+    .adbc_write_table = function(adbc, table_name, df, ...) {
+      adbc_called <<- TRUE
+      invisible(TRUE)
+    },
+    {
+      withr::with_envvar(c(SNOWFLAKE_HOST = "fake-spcs.snowflakecomputing.app"), {
+        withr::with_options(list(
+          RSnowflake.upload_method = "auto",
+          RSnowflake.bulk_write_threshold = 10L
+        ), {
+          df <- data.frame(a = 1:5, b = 6:10, c = 11:15)
+          .insert_data(con, '"T"', df)
+        })
+      })
+    }
+  )
+  expect_true(adbc_called)
+})
+
+test_that(".insert_data routes to Snowpark when method='snowpark'", {
+  con <- .test_conn()
+  snowpark_called <- FALSE
+
+  mockr::with_mock(
+    .insert_data_snowpark = function(conn, table_id, df) {
+      snowpark_called <<- TRUE
+      invisible(TRUE)
+    },
+    {
+      withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
+        withr::with_options(list(RSnowflake.upload_method = "snowpark"), {
+          df <- data.frame(x = 1L)
+          .insert_data(con, '"T"', df)
+        })
+      })
+    }
+  )
+  expect_true(snowpark_called)
+})
+
+test_that(".insert_data does NOT use Snowpark outside Workspace in auto mode", {
+  con <- .test_conn()
+  snowpark_called <- FALSE
+  adbc_called <- FALSE
+  fake_adbc <- list(db = "db", con = "con")
+  con@.state$adbc <- fake_adbc
+
+  mockr::with_mock(
+    .snowpark_write_available = function() TRUE,
+    .insert_data_snowpark = function(...) { snowpark_called <<- TRUE; invisible(TRUE) },
+    .adbc_write_table = function(adbc, table_name, df, ...) {
+      adbc_called <<- TRUE
+      invisible(TRUE)
+    },
+    {
+      withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
+        withr::with_options(list(
+          RSnowflake.upload_method = "auto",
+          RSnowflake.bulk_write_threshold = 10L
+        ), {
+          df <- data.frame(a = 1:5, b = 6:10, c = 11:15)
+          .insert_data(con, '"T"', df)
+        })
+      })
+    }
+  )
+  expect_false(snowpark_called)
+  expect_true(adbc_called)
+})
+
+test_that(".snowpark_write_available returns FALSE when reticulate missing", {
+  mockr::with_mock(
+    .has_reticulate = function() FALSE,
+    {
+      expect_false(.snowpark_write_available())
+    }
+  )
+})
+
+test_that(".ensure_snowpark_session caches failed init and does not retry", {
+  con <- .test_conn()
+  init_count <- 0L
+
+  mockr::with_mock(
+    .has_reticulate = function() TRUE,
+    .get_or_create_snowpark_session = function(conn) {
+      init_count <<- init_count + 1L
+      stop("snowpark unavailable")
+    },
+    {
+      result <- suppressWarnings(.ensure_snowpark_session(con))
+      expect_null(result)
+      expect_identical(con@.state$snowpark_session, "failed")
+
+      result2 <- .ensure_snowpark_session(con)
+      expect_null(result2)
+      expect_equal(init_count, 1L)
+    }
+  )
+})
+
+test_that(".ensure_snowpark_session returns NULL when reticulate missing", {
+  con <- .test_conn()
+  mockr::with_mock(
+    .has_reticulate = function() FALSE,
+    {
+      result <- .ensure_snowpark_session(con)
+      expect_null(result)
+      expect_identical(con@.state$snowpark_session, "failed")
+    }
+  )
+})
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 
@@ -290,17 +473,35 @@ test_that("dbDisconnect works when no ADBC backend present", {
 # Option defaults
 # ---------------------------------------------------------------------------
 
-test_that("default options are set correctly", {
+test_that("default options are set correctly (non-Workspace)", {
   on_load <- RSnowflake:::.onLoad
-  withr::with_options(list(
-    RSnowflake.backend = NULL,
-    RSnowflake.adbc_write_threshold = NULL,
-    RSnowflake.upload_method = NULL
-  ), {
-    expect_null(getOption("RSnowflake.backend"))
-    on_load("", "RSnowflake")
-    expect_equal(getOption("RSnowflake.backend"), "auto")
-    expect_equal(getOption("RSnowflake.adbc_write_threshold"), 50000L)
-    expect_equal(getOption("RSnowflake.upload_method"), "auto")
+  withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
+    withr::with_options(list(
+      RSnowflake.backend = NULL,
+      RSnowflake.adbc_write_threshold = NULL,
+      RSnowflake.bulk_write_threshold = NULL,
+      RSnowflake.upload_method = NULL
+    ), {
+      expect_null(getOption("RSnowflake.backend"))
+      on_load("", "RSnowflake")
+      expect_equal(getOption("RSnowflake.backend"), "auto")
+      expect_equal(getOption("RSnowflake.bulk_write_threshold"), 50000L)
+      expect_equal(getOption("RSnowflake.adbc_write_threshold"), 50000L)
+      expect_equal(getOption("RSnowflake.upload_method"), "auto")
+    })
+  })
+})
+
+test_that("Workspace environment raises bulk write threshold", {
+  on_load <- RSnowflake:::.onLoad
+  withr::with_envvar(c(SNOWFLAKE_HOST = "fake-spcs-host.snowflakecomputing.app"), {
+    withr::with_options(list(
+      RSnowflake.adbc_write_threshold = NULL,
+      RSnowflake.bulk_write_threshold = NULL
+    ), {
+      on_load("", "RSnowflake")
+      expect_equal(getOption("RSnowflake.bulk_write_threshold"), 200000L)
+      expect_equal(getOption("RSnowflake.adbc_write_threshold"), 200000L)
+    })
   })
 })

@@ -120,6 +120,49 @@ setMethod("dbSendQuery", signature("SnowflakeConnection", "character"),
       ))
     }
 
+    # ADBC fast path for parameterless queries -- eagerly fetch the result
+    # so that downstream dbFetch() can return the cached data.frame.
+    backend <- getOption("RSnowflake.backend", "auto")
+    if (is.null(params) && backend %in% c("adbc", "auto")) {
+      adbc <- .ensure_adbc(conn)
+      if (!is.null(adbc)) {
+        adbc_df <- tryCatch(
+          .adbc_get_query(adbc, statement),
+          error = function(e) {
+            if (!identical(backend, "auto")) {
+              cli_warn(c(
+                "!" = "ADBC query failed, falling back to REST API.",
+                "i" = conditionMessage(e)
+              ))
+            }
+            NULL
+          }
+        )
+        if (!is.null(adbc_df)) {
+          col_info <- data.frame(
+            name = names(adbc_df),
+            type = vapply(adbc_df, function(col) r_to_sf_type(col), character(1)),
+            stringsAsFactors = FALSE
+          )
+          meta <- list(
+            columns          = col_info,
+            num_rows         = nrow(adbc_df),
+            num_partitions   = 1L,
+            statement_handle = ""
+          )
+          state <- .new_result_state(rows_affected = -1L)
+          state$adbc_data <- adbc_df
+          return(new("SnowflakeResult",
+            connection = conn,
+            statement  = statement,
+            .resp_body = list(),
+            .meta      = meta,
+            .state     = state
+          ))
+        }
+      }
+    }
+
     bindings <- if (!is.null(params)) .params_to_bindings(params) else NULL
     resp <- sf_api_submit(conn, statement, bindings = bindings)
     meta <- sf_parse_metadata(resp)
@@ -139,6 +182,41 @@ setMethod("dbSendQuery", signature("SnowflakeConnection", "character"),
 setMethod("dbSendStatement", signature("SnowflakeConnection", "character"),
   function(conn, statement, params = NULL, ...) {
     .check_valid(conn)
+
+    # ADBC fast path for parameterless DDL/DML
+    backend <- getOption("RSnowflake.backend", "auto")
+    if (is.null(params) && backend %in% c("adbc", "auto")) {
+      adbc <- .ensure_adbc(conn)
+      if (!is.null(adbc)) {
+        adbc_ok <- tryCatch({
+          .adbc_execute_sql(adbc, statement)
+          TRUE
+        }, error = function(e) {
+          if (!identical(backend, "auto")) {
+            cli_warn(c(
+              "!" = "ADBC statement failed, falling back to REST API.",
+              "i" = conditionMessage(e)
+            ))
+          }
+          FALSE
+        })
+        if (adbc_ok) {
+          state <- .new_result_state(rows_affected = 0L)
+          state$fetched <- TRUE
+          return(new("SnowflakeResult",
+            connection = conn,
+            statement  = statement,
+            .resp_body = list(),
+            .meta      = list(columns = data.frame(name = character(0),
+                                                   type = character(0)),
+                              num_rows = 0L, num_partitions = 0L,
+                              statement_handle = ""),
+            .state     = state
+          ))
+        }
+      }
+    }
+
     bindings <- if (!is.null(params)) .params_to_bindings(params) else NULL
     resp <- sf_api_submit(conn, statement, bindings = bindings)
     meta <- sf_parse_metadata(resp)
@@ -216,6 +294,28 @@ setMethod("dbGetQuery", signature("SnowflakeConnection", "character"),
 setMethod("dbExecute", signature("SnowflakeConnection", "character"),
   function(conn, statement, params = NULL, ...) {
     .check_valid(conn)
+
+    # ADBC fast path for parameterless statements
+    backend <- getOption("RSnowflake.backend", "auto")
+    if (is.null(params) && backend %in% c("adbc", "auto")) {
+      adbc <- .ensure_adbc(conn)
+      if (!is.null(adbc)) {
+        result <- tryCatch(
+          .adbc_execute_sql(adbc, statement),
+          error = function(e) {
+            if (!identical(backend, "auto")) {
+              cli_warn(c(
+                "!" = "ADBC execute failed, falling back to REST API.",
+                "i" = conditionMessage(e)
+              ))
+            }
+            NULL
+          }
+        )
+        if (!is.null(result)) return(result)
+      }
+    }
+
     bindings <- if (!is.null(params)) .params_to_bindings(params) else NULL
     resp <- sf_api_submit(conn, statement, bindings = bindings)
     .extract_rows_affected(resp)
@@ -226,11 +326,12 @@ setMethod("dbExecute", signature("SnowflakeConnection", "character"),
 # DBI Arrow methods
 #
 # Priority order for Arrow results:
-# 1. ADBC (when installed) -- true Arrow-native via the Go driver hitting
-#    the public endpoint.  Works in Workspace with PAT auth.
+# 1. ADBC (when installed) -- true Arrow-native via the Go driver.
+#    In Workspace: connects via SNOWFLAKE_HOST with SPCS OAuth.
+#    Outside Workspace: connects via public endpoint with PAT/JWT.
 # 2. Internal GS protocol (when a session is active and
 #    use_native_arrow = TRUE) -- Arrow IPC from the server.  Does NOT work
-#    in Workspace; the GS session endpoint rejects PAT/SPCS tokens.
+#    in Workspace (requires a GS session, not available via REST/ADBC).
 # 3. REST API v2 JSON with client-side Arrow conversion (universal fallback).
 #    Note: SQL API v2 Arrow result format is gated internally and NOT GA.
 # ---------------------------------------------------------------------------
@@ -306,14 +407,13 @@ setMethod("dbSendQueryArrow", signature("SnowflakeConnection", "character"),
 #' @export
 setMethod("dbListTables", "SnowflakeConnection", function(conn, ...) {
   .check_valid(conn)
-  resp <- sf_api_submit(conn, "SHOW TABLES IN SCHEMA")
-  parsed <- sf_parse_response(resp)
-  if (nrow(parsed$data) == 0L) return(character(0))
+  df <- dbGetQuery(conn, "SHOW TABLES IN SCHEMA")
+  if (nrow(df) == 0L) return(character(0))
 
-  name_col <- which(tolower(parsed$meta$columns$name) == "name")
+  name_col <- which(tolower(names(df)) == "name")
   if (length(name_col) == 0L) return(character(0))
 
-  parsed$data[[name_col]]
+  df[[name_col]]
 })
 
 #' @rdname SnowflakeConnection-class
@@ -332,14 +432,13 @@ setMethod("dbListFields", signature("SnowflakeConnection", "character"),
   function(conn, name, ...) {
     .check_valid(conn)
     id <- dbQuoteIdentifier(conn, .maybe_upcase(name))
-    resp <- sf_api_submit(conn, paste0("SHOW COLUMNS IN TABLE ", id))
-    parsed <- sf_parse_response(resp)
-    if (nrow(parsed$data) == 0L) return(character(0))
+    df <- dbGetQuery(conn, paste0("SHOW COLUMNS IN TABLE ", id))
+    if (nrow(df) == 0L) return(character(0))
 
-    col_col <- which(tolower(parsed$meta$columns$name) == "column_name")
+    col_col <- which(tolower(names(df)) == "column_name")
     if (length(col_col) == 0L) return(character(0))
 
-    parsed$data[[col_col]]
+    df[[col_col]]
   }
 )
 
@@ -368,16 +467,15 @@ setMethod("dbListObjects", signature("SnowflakeConnection"),
 )
 
 .list_databases <- function(conn) {
-  resp <- sf_api_submit(conn, "SHOW DATABASES")
-  parsed <- sf_parse_response(resp)
-  if (nrow(parsed$data) == 0L) {
+  df <- dbGetQuery(conn, "SHOW DATABASES")
+  if (nrow(df) == 0L) {
     return(data.frame(table = I(list()), is_prefix = logical(0)))
   }
-  name_col <- which(tolower(parsed$meta$columns$name) == "name")
+  name_col <- which(tolower(names(df)) == "name")
   if (length(name_col) == 0L) {
     return(data.frame(table = I(list()), is_prefix = logical(0)))
   }
-  dbs <- parsed$data[[name_col]]
+  dbs <- df[[name_col]]
   data.frame(
     table = I(lapply(dbs, function(d) Id(catalog = d))),
     is_prefix = rep(TRUE, length(dbs))
@@ -386,16 +484,15 @@ setMethod("dbListObjects", signature("SnowflakeConnection"),
 
 .list_schemas <- function(conn, database) {
   qdb <- dbQuoteIdentifier(conn, database)
-  resp <- sf_api_submit(conn, paste0("SHOW SCHEMAS IN DATABASE ", qdb))
-  parsed <- sf_parse_response(resp)
-  if (nrow(parsed$data) == 0L) {
+  df <- dbGetQuery(conn, paste0("SHOW SCHEMAS IN DATABASE ", qdb))
+  if (nrow(df) == 0L) {
     return(data.frame(table = I(list()), is_prefix = logical(0)))
   }
-  name_col <- which(tolower(parsed$meta$columns$name) == "name")
+  name_col <- which(tolower(names(df)) == "name")
   if (length(name_col) == 0L) {
     return(data.frame(table = I(list()), is_prefix = logical(0)))
   }
-  schemas <- parsed$data[[name_col]]
+  schemas <- df[[name_col]]
   data.frame(
     table = I(lapply(schemas, function(s) Id(catalog = database, schema = s))),
     is_prefix = rep(TRUE, length(schemas))
@@ -406,16 +503,15 @@ setMethod("dbListObjects", signature("SnowflakeConnection"),
   qdb <- dbQuoteIdentifier(conn, database)
   qsch <- dbQuoteIdentifier(conn, schema)
   sql <- paste0("SHOW TABLES IN SCHEMA ", qdb, ".", qsch)
-  resp <- sf_api_submit(conn, sql)
-  parsed <- sf_parse_response(resp)
-  if (nrow(parsed$data) == 0L) {
+  df <- dbGetQuery(conn, sql)
+  if (nrow(df) == 0L) {
     return(data.frame(table = I(list()), is_prefix = logical(0)))
   }
-  name_col <- which(tolower(parsed$meta$columns$name) == "name")
+  name_col <- which(tolower(names(df)) == "name")
   if (length(name_col) == 0L) {
     return(data.frame(table = I(list()), is_prefix = logical(0)))
   }
-  tables <- parsed$data[[name_col]]
+  tables <- df[[name_col]]
   data.frame(
     table = I(lapply(tables, function(t) {
       Id(catalog = database, schema = schema, table = t)
@@ -714,28 +810,47 @@ setMethod("dbDataType", "SnowflakeConnection", function(dbObj, obj, ...) {
 
 #' Insert data.frame rows, routing to the best available backend
 #'
-#' Routing order:
-#' - "auto" (default): ADBC bulk ingest when available AND cell count exceeds
-#'   `RSnowflake.adbc_write_threshold`, otherwise literal SQL INSERT.
-#' - "adbc": force ADBC; falls back to literal if ADBC unavailable.
-#' - "literal": SQL string INSERT (fastest REST-only path).
-#' - "bind": DEPRECATED. Bind-parameter INSERT -- slower than literal because
-#'   the SQL API v2 has no array-binding support (confirmed by Snowflake eng).
+#' Routing order for `"auto"` (default):
+#' - ADBC bulk ingest when available AND cell count >= threshold.
+#'   In Workspace, ADBC connects via SNOWFLAKE_HOST (no public endpoint).
+#' - In Workspace: Snowpark `write_pandas` as fallback when ADBC absent.
+#' - Otherwise: literal SQL INSERT (routed via ADBC if available, else REST).
+#'
+#' Explicit methods:
+#' - `"snowpark"`: force Snowpark write_pandas; falls back to literal.
+#' - `"adbc"`: force ADBC; falls back to literal if unavailable.
+#' - `"literal"`: SQL string INSERT (uses ADBC when available, else REST).
+#' - `"bind"`: DEPRECATED.
 #' @noRd
 .insert_data <- function(conn, table_id, df) {
   method <- getOption("RSnowflake.upload_method", "auto")
   cells <- nrow(df) * ncol(df)
   threshold <- as.integer(
-    getOption("RSnowflake.adbc_write_threshold", 50000L)
+    getOption("RSnowflake.bulk_write_threshold",
+              getOption("RSnowflake.adbc_write_threshold", 50000L))
   )
+  in_workspace <- nzchar(Sys.getenv("SNOWFLAKE_HOST", ""))
 
+  # --- auto routing ---
+  # In Workspace: ADBC via internal SPCS host is now fast (~7s for 50K rows)
+  # and avoids the reticulate/Python dependency.  Snowpark write_pandas is
+  # kept as a fallback when ADBC is not installed.
   if (identical(method, "auto") && cells >= threshold) {
     adbc <- .ensure_adbc(conn)
     if (!is.null(adbc)) {
       return(.insert_data_adbc(adbc, table_id, df))
     }
+    if (in_workspace && .snowpark_write_available()) {
+      return(.insert_data_snowpark(conn, table_id, df))
+    }
   }
 
+  # --- explicit snowpark ---
+  if (identical(method, "snowpark")) {
+    return(.insert_data_snowpark(conn, table_id, df))
+  }
+
+  # --- explicit adbc ---
   if (identical(method, "adbc")) {
     adbc <- .ensure_adbc(conn)
     if (!is.null(adbc)) {
@@ -744,6 +859,7 @@ setMethod("dbDataType", "SnowflakeConnection", function(dbObj, obj, ...) {
     cli_warn("ADBC backend unavailable, falling back to literal INSERT.")
   }
 
+  # --- deprecated bind ---
   if (identical(method, "bind")) {
     cli_warn(c(
       "!" = "{.code upload_method = \"bind\"} is deprecated.",
@@ -768,12 +884,16 @@ setMethod("dbDataType", "SnowflakeConnection", function(dbObj, obj, ...) {
 }
 
 #' Legacy INSERT path: inline SQL string literals
+#'
+#' Uses ADBC when available (avoids REST API on public endpoint).
 #' @noRd
 .insert_data_literal <- function(conn, table_id, df) {
   batch_size <- getOption("RSnowflake.insert_batch_size", 5000L)
   batch_size <- as.integer(batch_size)
   n <- nrow(df)
   ncols <- ncol(df)
+
+  adbc <- .ensure_adbc(conn)
 
   col_clause <- paste0(
     " (",
@@ -804,7 +924,12 @@ setMethod("dbDataType", "SnowflakeConnection", function(dbObj, obj, ...) {
       "INSERT INTO ", table_id, col_clause, " VALUES\n",
       paste(rows, collapse = ",\n")
     )
-    sf_api_submit(conn, sql)
+
+    if (!is.null(adbc)) {
+      .adbc_execute_sql(adbc, sql)
+    } else {
+      sf_api_submit(conn, sql)
+    }
 
     if (use_progress) cli::cli_progress_update(set = end, id = pb)
   }

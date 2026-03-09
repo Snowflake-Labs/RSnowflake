@@ -10,7 +10,7 @@
 #' @returns Parsed JSON response body (list).
 #' @noRd
 sf_api_submit <- function(con, sql, bindings = NULL, async = FALSE) {
-  host <- sf_host(con@account)
+  host <- sf_host(con@account, con@.auth)
   url <- paste0(host, "/api/v2/statements")
 
   body <- list(
@@ -41,7 +41,7 @@ sf_api_submit <- function(con, sql, bindings = NULL, async = FALSE) {
 #' Fetch a result partition (JSON)
 #' @noRd
 sf_api_fetch_partition <- function(con, handle, partition) {
-  host <- sf_host(con@account)
+  host <- sf_host(con@account, con@.auth)
   url <- paste0(host, "/api/v2/statements/", handle,
                 "?partition=", partition)
   .sf_api_request_with_refresh(con, "GET", url)
@@ -50,7 +50,7 @@ sf_api_fetch_partition <- function(con, handle, partition) {
 #' Check the status of an async statement
 #' @noRd
 sf_api_status <- function(con, handle) {
-  host <- sf_host(con@account)
+  host <- sf_host(con@account, con@.auth)
   url <- paste0(host, "/api/v2/statements/", handle)
   .sf_api_request_with_refresh(con, "GET", url)
 }
@@ -58,7 +58,7 @@ sf_api_status <- function(con, handle) {
 #' Cancel a running statement
 #' @noRd
 sf_api_cancel <- function(con, handle) {
-  host <- sf_host(con@account)
+  host <- sf_host(con@account, con@.auth)
   url <- paste0(host, "/api/v2/statements/", handle, "/cancel")
   tryCatch(
     .sf_api_request_with_refresh(con, "POST", url),
@@ -91,24 +91,27 @@ sf_api_cancel <- function(con, handle) {
 #' @noRd
 .try_refresh_token <- function(con) {
   auth <- con@.auth
+
   if (auth$type == "jwt") {
-    tryCatch({
+    return(tryCatch({
       new_jwt <- sf_generate_jwt(auth$account, auth$user, auth$private_key_path)
       con@.auth$token <- new_jwt
       con@.auth$generated_at <- Sys.time()
       TRUE
-    }, error = function(e) FALSE)
-  } else if (auth$type == "token") {
-    new_token <- .read_workspace_token()
-    if (nzchar(new_token) && new_token != auth$token) {
-      con@.auth$token <- new_token
-      TRUE
-    } else {
-      FALSE
-    }
-  } else {
-    FALSE
+    }, error = function(e) FALSE))
   }
+
+  if (auth$type %in% c("token", "oauth")) {
+    old_token <- auth$token
+    new_token <- .read_workspace_token()
+    token_changed <- nzchar(new_token) && new_token != old_token
+    if (token_changed) {
+      con@.auth$token <- new_token
+    }
+    return(token_changed)
+  }
+
+  FALSE
 }
 
 

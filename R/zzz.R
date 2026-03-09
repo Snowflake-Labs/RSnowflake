@@ -2,6 +2,18 @@
 
 .onLoad <- function(libname, pkgname) {
   op <- options()
+
+  # Bulk write threshold: in "auto" mode, writes above this cell count
+
+  # (rows * cols) are routed to the fast bulk backend:
+  #   - Workspace: Snowpark write_pandas (internal SPCS path, ~2.5s/50K rows)
+  #   - External:  ADBC PUT+COPY INTO (public endpoint, ~5-10s/50K rows)
+  # Below threshold, literal SQL INSERT is used (fast for small data).
+  # Workspace threshold is higher because even the fast Snowpark path has
+  # ~2s fixed overhead vs ~1s for literal INSERT on small data.
+  in_workspace <- nzchar(Sys.getenv("SNOWFLAKE_HOST", ""))
+  bulk_threshold <- if (in_workspace) 200000L else 50000L
+
   op_rsf <- list(
     RSnowflake.timeout              = 600L,
     RSnowflake.retry_max            = 3L,
@@ -16,7 +28,8 @@
     RSnowflake.use_native_arrow     = FALSE,
     RSnowflake.verbose              = FALSE,
     RSnowflake.backend              = "auto",
-    RSnowflake.adbc_write_threshold = 50000L
+    RSnowflake.bulk_write_threshold = bulk_threshold,
+    RSnowflake.adbc_write_threshold = bulk_threshold
   )
   toset <- !(names(op_rsf) %in% names(op))
   if (any(toset)) options(op_rsf[toset])

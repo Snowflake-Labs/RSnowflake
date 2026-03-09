@@ -115,6 +115,35 @@ dbAppendTable(con, "iris_copy", iris[1:10, ])
 dbRemoveTable(con, "iris_copy")
 ```
 
+### Bulk Write Methods
+
+RSnowflake automatically picks the fastest write path for your environment.
+The `upload_method` option controls this:
+
+| Method | How it works | Best for |
+|---|---|---|
+| `"auto"` (default) | Snowpark in Workspace, ADBC outside, literal for small data | Most users |
+| `"snowpark"` | Python `write_pandas` via reticulate (internal SPCS path) | Workspace bulk writes |
+| `"adbc"` | Arrow-native PUT + COPY INTO via Go driver | Local/external bulk writes |
+| `"literal"` | SQL INSERT statements | Small data, maximum compatibility |
+
+In **Workspace Notebooks**, `"auto"` routes bulk writes (above
+`RSnowflake.bulk_write_threshold` cells) through the Python Snowpark session
+via reticulate. This uses the internal SPCS network path and is ~10x faster
+than ADBC for writes in Workspace (~2.5s vs ~21s for 50K rows).
+
+**Outside Workspace**, `"auto"` routes to ADBC when available, which
+outperforms literal INSERT for datasets above ~20K rows.
+
+```{r upload-method}
+# Force a specific method
+options(RSnowflake.upload_method = "snowpark")
+dbWriteTable(con, "big_table", large_df)
+
+# Adjust the threshold (cells = rows * cols)
+options(RSnowflake.bulk_write_threshold = 100000L)
+```
+
 ## Identifier Case Handling
 
 By default, RSnowflake uppercases table and column names in DDL/DML
@@ -142,6 +171,28 @@ dbListFields(con, "my_table")
 **Note:** `dbQuoteIdentifier()` is not affected by this option -- it
 always faithfully quotes the string you give it. The option only
 controls the implicit casing applied in table-level operations.
+
+## ADBC Acceleration (optional)
+
+When the `adbcsnowflake` and `adbcdrivermanager` packages are installed,
+RSnowflake can use the ADBC (Arrow Database Connectivity) backend for
+Arrow-native reads and PUT + COPY INTO bulk writes. This is particularly
+beneficial for large datasets outside of Workspace Notebooks.
+
+```{r adbc}
+# Check if ADBC is available
+has_adbc <- requireNamespace("adbcsnowflake", quietly = TRUE)
+cat("ADBC available:", has_adbc, "\n")
+
+# ADBC is used automatically in 'auto' mode for large writes
+# Force it for reads:
+options(RSnowflake.backend = "adbc")
+df <- dbGetQuery(con, "SELECT * FROM big_table")
+options(RSnowflake.backend = "auto")
+```
+
+See `WORKSPACE_ADBC.md` in the package for Workspace-specific ADBC
+constraints (EAI network rules, PAT auth, stage host whitelisting).
 
 ## Arrow Interface
 

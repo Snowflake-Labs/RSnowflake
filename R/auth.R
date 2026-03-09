@@ -8,18 +8,21 @@
 #'
 #' Priority order:
 #' 1. Explicit bearer token (the `token` parameter)
-#' 2. Programmatic Access Token (SNOWFLAKE_PAT env var)
-#' 3. Key-pair JWT (private_key_path + account + user)
-#' 4. Workspace session token (SNOWFLAKE_TOKEN env var or token file) --
-#'    last resort; SPCS tokens are rejected by the SQL API for non-blessed
-#'    clients (HTTP 401, code 395092).
+#' 2. Workspace SPCS OAuth token (SNOWFLAKE_HOST set + token file exists) --
+#'    all official Snowflake drivers accept this token when connecting via
+#'    the internal SPCS gateway.  Returns type = "oauth" so that ADBC maps
+#'    to auth_oauth and REST API v2 uses Bearer + OAUTH token type.
+#' 3. Programmatic Access Token (SNOWFLAKE_PAT env var)
+#' 4. Key-pair JWT (private_key_path + account + user)
+#' 5. Workspace session token fallback (SNOWFLAKE_TOKEN env var or token
+#'    file without SNOWFLAKE_HOST) -- legacy path.
 #'
 #' @param account Account identifier.
 #' @param user Username.
 #' @param token Explicit bearer token.
 #' @param private_key_path Path to PEM private key file.
 #' @param authenticator Auth method string.
-#' @returns A list with `type` ("jwt", "pat", "token") and `token` (the bearer string).
+#' @returns A list with `type` ("oauth", "jwt", "pat", "token") and `token`.
 #' @noRd
 sf_auth_resolve <- function(account, user = NULL, token = NULL,
                             private_key_path = NULL,
@@ -33,7 +36,19 @@ sf_auth_resolve <- function(account, user = NULL, token = NULL,
     ))
   }
 
-  # Priority 2: Programmatic Access Token (PAT) -- preferred in Workspace
+  # Priority 2: Workspace SPCS OAuth -- preferred when inside SPCS container
+  if (nzchar(Sys.getenv("SNOWFLAKE_HOST", ""))) {
+    ws_token <- .read_workspace_token()
+    if (nzchar(ws_token)) {
+      return(list(
+        type = "oauth",
+        token = ws_token,
+        token_type = "OAUTH"
+      ))
+    }
+  }
+
+  # Priority 3: Programmatic Access Token (PAT)
   pat <- Sys.getenv("SNOWFLAKE_PAT", "")
   if (nzchar(pat)) {
     return(list(
@@ -43,7 +58,7 @@ sf_auth_resolve <- function(account, user = NULL, token = NULL,
     ))
   }
 
-  # Priority 3: Key-pair JWT
+  # Priority 4: Key-pair JWT
   auth_lower <- tolower(authenticator %||% "")
   if (!is.null(private_key_path) || auth_lower == "snowflake_jwt") {
     if (is.null(private_key_path) || !nzchar(private_key_path)) {
@@ -70,9 +85,9 @@ sf_auth_resolve <- function(account, user = NULL, token = NULL,
     ))
   }
 
-  # Priority 4: Workspace session token (SPCS) -- may be rejected by SQL API
+  # Priority 5: Workspace session token fallback (no SNOWFLAKE_HOST)
   ws_token <- .read_workspace_token()
-  if (is.null(token) && nzchar(ws_token)) {
+  if (nzchar(ws_token)) {
     return(list(
       type = "token",
       token = ws_token,
@@ -82,7 +97,8 @@ sf_auth_resolve <- function(account, user = NULL, token = NULL,
 
   cli_abort(c(
     "No Snowflake credentials found.",
-    "i" = "In Workspace Notebooks, create a PAT first (see setup cells).",
+    "i" = "In Workspace Notebooks, ensure SNOWFLAKE_HOST is set and",
+    " " = "/snowflake/session/token exists (automatic in SPCS).",
     "i" = "Otherwise provide {.arg token}, set {.envvar SNOWFLAKE_PAT},",
     " " = "or configure key-pair auth in {.file connections.toml}."
   ))

@@ -1,20 +1,25 @@
-# ADBC Backend (Optional Accelerator)
+# ADBC Backend (Primary in Workspace, Optional Accelerator Outside)
 # =============================================================================
-# When adbcsnowflake and adbcdrivermanager are installed, RSnowflake can
-# transparently use ADBC for bulk reads (Arrow-native) and writes (PUT +
-# COPY INTO via the Go driver).  The REST API v2 remains the universal
-# fallback when ADBC packages are absent or initialisation fails.
+# When adbcsnowflake and adbcdrivermanager are installed, RSnowflake routes
+# ALL DBI operations through ADBC: reads, writes, DDL (dbExecute,
+# dbCreateTable, dbRemoveTable), and metadata (dbListTables, dbListFields).
+# This eliminates the need for the public endpoint in the EAI.
 #
-# Architecture note (confirmed by Snowflake engineering via GLEAN, Mar 2026):
-# - ADBC uses the Go Snowflake driver, which connects to the **public**
-#   account endpoint (https://<account>.snowflakecomputing.com) as an
-#   external client.  It does NOT use the internal SPCS GS path.
-# - In Workspace Notebooks (SPCS containers), ADBC authenticates with a
-#   PAT (Programmatic Access Token) -- the SPCS token at
-#   /snowflake/session/token is only accepted by blessed clients (Snowpark
-#   Python, Snowpark Scala/Java JDBC).  ADBC is not in that list.
-# - PAT auth from SPCS requires a network policy or authentication policy
-#   with PAT_POLICY = (NETWORK_POLICY_EVALUATION = ENFORCED_NOT_REQUIRED).
+# The REST API v2 remains the fallback when ADBC packages are absent.
+# In Workspace, a minted session token (Path B) can replace the public
+# endpoint even without ADBC.
+#
+# Connectivity (updated Mar 2026 -- corrects earlier "blessed client" note):
+# - ADBC wraps the Go Snowflake driver (gosnowflake).  Like all official
+#   Snowflake drivers (JDBC, ODBC, Go, Python, .NET), it can authenticate
+#   with the SPCS OAuth token at /snowflake/session/token **provided** the
+#   connection targets the internal SPCS gateway (SNOWFLAKE_HOST) and the
+#   token is passed as a connection property (not embedded in a URL).
+# - In Workspace Notebooks (SPCS containers), ADBC connects to the
+#   internal host with authenticator = "auth_oauth".  No PAT, network
+#   policy, or public endpoint is required.
+# - Outside Workspace, ADBC connects to <account>.snowflakecomputing.com
+#   using whatever auth the user configured (PAT, JWT, etc.).
 # - SQL API v2 does NOT support Arrow result format (gated behind an
 #   internal flag, not GA).  ADBC is the only way to get Arrow-native
 #   reads from R today without a GS session.
@@ -36,7 +41,8 @@
 #' Check whether a connection has a live ADBC backend
 #' @noRd
 .has_adbc <- function(conn) {
-  !is.null(conn@.state$adbc) && !is.null(conn@.state$adbc$con)
+  adbc <- conn@.state$adbc
+  !is.null(adbc) && !identical(adbc, "failed") && !is.null(adbc$con)
 }
 
 # ---------------------------------------------------------------------------
@@ -46,15 +52,32 @@
 #' Lazy-init the ADBC backend, returning the backend list or NULL
 #'
 #' On first call the backend is created and cached in conn@.state$adbc.
-#' Subsequent calls return the cached value immediately.
+#' Subsequent calls return the cached value immediately.  A failed init
+#' is cached as the string "failed" so we don't retry on every call.
 #' @noRd
 .ensure_adbc <- function(conn) {
-  if (!is.null(conn@.state$adbc)) return(conn@.state$adbc)
+  cached <- conn@.state$adbc
+  if (!is.null(cached)) {
+    if (identical(cached, "failed")) return(NULL)
+    return(cached)
+  }
 
   backend <- getOption("RSnowflake.backend", "auto")
   if (identical(backend, "rest")) return(NULL)
 
+  t0 <- proc.time()
   adbc <- .init_adbc_backend(conn)
+  elapsed <- (proc.time() - t0)[["elapsed"]]
+
+  if (is.null(adbc)) {
+    conn@.state$adbc <- "failed"
+    return(NULL)
+  }
+
+  if (isTRUE(getOption("RSnowflake.verbose", FALSE))) {
+    cli_inform(c("i" = "ADBC backend init took {.val {round(elapsed, 1)}}s."))
+  }
+
   conn@.state$adbc <- adbc
   adbc
 }
@@ -80,9 +103,15 @@
       auth_info
     )
 
-    host <- Sys.getenv("SNOWFLAKE_HOST", "")
-    if (nzchar(host)) {
-      args[["adbc.snowflake.sql.uri.host"]] <- host
+    # In Workspace, connect via the internal SPCS gateway for lower latency
+    # and zero-config auth.  Outside Workspace, use the public endpoint.
+    spcs_host <- Sys.getenv("SNOWFLAKE_HOST", "")
+    if (nzchar(spcs_host)) {
+      args[["adbc.snowflake.sql.uri.host"]] <- spcs_host
+    } else {
+      args[["adbc.snowflake.sql.uri.host"]] <- paste0(
+        conn@account, ".snowflakecomputing.com"
+      )
     }
 
     if (nzchar(conn@role)) {
@@ -93,15 +122,13 @@
     adbc_con <- adbcdrivermanager::adbc_connection_init(db)
 
     if (isTRUE(getOption("RSnowflake.verbose", FALSE))) {
-      in_workspace <- nzchar(Sys.getenv("SNOWFLAKE_HOST", ""))
-      if (in_workspace) {
+      if (nzchar(spcs_host)) {
         cli_inform(c(
-          "i" = "ADBC backend initialised (Workspace: external-client pattern via public endpoint).",
-          "i" = "ADBC uses PAT auth to {.val {conn@account}.snowflakecomputing.com}.",
-          "i" = "Ensure a network policy or authentication policy allows PAT from this container."
+          "i" = "ADBC backend initialised (Workspace: SPCS OAuth via internal host).",
+          "i" = "Host: {.val {spcs_host}}"
         ))
       } else {
-        cli_inform("i" = "ADBC backend initialised.")
+        cli_inform(c("i" = "ADBC backend initialised."))
       }
     }
 
@@ -114,9 +141,8 @@
         cli_warn(c(
           "!" = "ADBC backend initialisation failed inside Workspace.",
           "i" = hints,
-          "i" = "ADBC in Workspace requires PAT auth to the public endpoint.",
-          "i" = "Ensure the user has an authentication policy that allows PAT without a network policy,",
-          "i" = "or configure a network policy that includes the container's egress IP."
+          "i" = "Verify that /snowflake/session/token exists and SNOWFLAKE_HOST is set.",
+          "i" = "Fallback: set SNOWFLAKE_PAT for PAT auth to the public endpoint."
         ))
       } else {
         cli_warn(c(
@@ -134,6 +160,13 @@
 #' @noRd
 .adbc_auth_args <- function(conn) {
   auth <- conn@.auth
+
+  if (auth$type == "oauth") {
+    return(list(
+      `adbc.snowflake.sql.auth_type` = "auth_oauth",
+      `adbc.snowflake.sql.client_option.auth_token` = auth$token
+    ))
+  }
 
   if (auth$type %in% c("pat", "token")) {
     return(list(
@@ -196,18 +229,23 @@
 #' @param mode ADBC ingest mode: "default", "create", or "append".
 #' @noRd
 .adbc_write_table <- function(adbc, table_name, df, mode = "append") {
+  verbose <- isTRUE(getOption("RSnowflake.verbose", FALSE))
   parts <- strsplit(table_name, ".", fixed = TRUE)[[1L]]
 
   if (length(parts) >= 2L) {
     schema_part <- parts[length(parts) - 1L]
     table_part <- parts[length(parts)]
 
+    if (verbose) t_schema <- proc.time()
     prev_schema <- tryCatch(
       .adbc_get_query(adbc, "SELECT CURRENT_SCHEMA()")[[1L]],
       error = function(e) NULL
     )
 
     .adbc_execute_sql(adbc, paste("USE SCHEMA", schema_part))
+    if (verbose) {
+      cli_inform(c("i" = "ADBC schema switch: {.val {round((proc.time() - t_schema)[['elapsed']], 1)}}s"))
+    }
     on.exit({
       if (!is.null(prev_schema) && nzchar(prev_schema)) {
         tryCatch(
@@ -220,11 +258,25 @@
     table_part <- table_name
   }
 
+  if (verbose) {
+    cli_inform(c(
+      "i" = "ADBC write_adbc: {nrow(df)} rows x {ncol(df)} cols to {.val {table_part}} (mode={.val {mode}})"
+    ))
+    t_write <- proc.time()
+  }
+
   adbcdrivermanager::write_adbc(df, adbc$con, table_part, mode = mode)
+
+  if (verbose) {
+    cli_inform(c("i" = "ADBC write_adbc completed in {.val {round((proc.time() - t_write)[['elapsed']], 1)}}s"))
+  }
+
   invisible(TRUE)
 }
 
-#' Execute a SQL statement on the ADBC connection (fire-and-forget)
+#' Execute a SQL statement on the ADBC connection
+#'
+#' Returns 0L so callers like dbExecute can use the value directly.
 #' @noRd
 .adbc_execute_sql <- function(adbc, sql) {
   stmt <- adbcdrivermanager::adbc_statement_init(adbc$con)
@@ -234,7 +286,7 @@
   ))
   adbcdrivermanager::adbc_statement_set_sql_query(stmt, sql)
   adbcdrivermanager::adbc_statement_execute_query(stmt)
-  invisible()
+  0L
 }
 
 # ---------------------------------------------------------------------------
