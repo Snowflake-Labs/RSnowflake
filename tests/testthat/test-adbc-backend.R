@@ -215,11 +215,13 @@ test_that(".insert_data stays on literal when below threshold in auto mode", {
   fake_adbc <- list(db = "db", con = "con")
   con@.state$adbc <- fake_adbc
 
-  adbc_called <- FALSE
-  literal_called <- FALSE
+  adbc_bulk_called <- FALSE
+  adbc_sql_called <- FALSE
+  rest_called <- FALSE
   mockr::with_mock(
-    .adbc_write_table = function(...) { adbc_called <<- TRUE },
-    sf_api_submit = function(...) { literal_called <<- TRUE; list() },
+    .adbc_write_table = function(...) { adbc_bulk_called <<- TRUE },
+    .adbc_execute_sql = function(...) { adbc_sql_called <<- TRUE; 0L },
+    sf_api_submit = function(...) { rest_called <<- TRUE; list() },
     {
       withr::with_envvar(c(SNOWFLAKE_HOST = NA), {
         withr::with_options(list(
@@ -233,8 +235,8 @@ test_that(".insert_data stays on literal when below threshold in auto mode", {
       })
     }
   )
-  expect_false(adbc_called)
-  expect_true(literal_called)
+  expect_false(adbc_bulk_called)
+  expect_true(adbc_sql_called)
 })
 
 test_that(".insert_data falls back to literal when method='adbc' but no backend", {
