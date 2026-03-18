@@ -2,7 +2,9 @@
 # =============================================================================
 # Registers SnowflakeConnection as a dbplyr backend, inheriting all of
 # dbplyr's built-in Snowflake SQL translations (paste0 -> CONCAT, IFF,
-# ARRAY_TO_STRING, lubridate date functions, etc.).
+# ARRAY_TO_STRING, lubridate date functions, etc.) and adding RSnowflake-
+# specific translations for Snowflake functions that dbplyr does not cover
+# (semi-structured data, array operations, approximate aggregates).
 #
 # These S3 methods are registered lazily via .onLoad because the generics
 # live in dbplyr (a Suggests dependency, not necessarily loaded).
@@ -11,7 +13,65 @@ dbplyr_edition.SnowflakeConnection <- function(con) 2L
 
 sql_translation.SnowflakeConnection <- function(con) {
   rlang::check_installed("dbplyr", reason = "for dplyr integration")
-  dbplyr::sql_translation(dbplyr::simulate_snowflake())
+  base <- dbplyr::sql_translation(dbplyr::simulate_snowflake())
+
+  dbplyr::sql_variant(
+    dbplyr::sql_translator(
+      .parent = base$scalar,
+
+      # -- Semi-structured data -----------------------------------------------
+      parse_json     = function(x) dbplyr::sql_expr(PARSE_JSON(!!x), con = con),
+      try_parse_json = function(x) dbplyr::sql_expr(TRY_PARSE_JSON(!!x), con = con),
+      typeof         = function(x) dbplyr::sql_expr(TYPEOF(!!x), con = con),
+      is_object      = function(x) dbplyr::sql_expr(IS_OBJECT(!!x), con = con),
+      is_array       = function(x) dbplyr::sql_expr(IS_ARRAY(!!x), con = con),
+      is_integer     = function(x) dbplyr::sql_expr(IS_INTEGER(!!x), con = con),
+
+      # -- Array operations ---------------------------------------------------
+      array_size     = function(x) dbplyr::sql_expr(ARRAY_SIZE(!!x), con = con),
+      array_contains = function(arr, val)
+        dbplyr::sql_expr(ARRAY_CONTAINS(!!val, !!arr), con = con),
+      array_slice    = function(arr, from, to)
+        dbplyr::sql_expr(ARRAY_SLICE(!!arr, !!from, !!to), con = con),
+
+      # -- String -------------------------------------------------------------
+      regexp_substr  = function(x, pattern, pos = 1L, occ = 1L, params = "c")
+        dbplyr::sql_expr(
+          REGEXP_SUBSTR(!!x, !!pattern, !!pos, !!occ, !!params), con = con
+        ),
+
+      # -- Utility ------------------------------------------------------------
+      hash = function(...) {
+        args <- vapply(list(...), function(a) {
+          as.character(dbplyr::escape(a, con = con))
+        }, character(1))
+        dbplyr::sql(paste0("HASH(", paste(args, collapse = ", "), ")"))
+      }
+    ),
+
+    dbplyr::sql_translator(
+      .parent = base$aggregate,
+
+      # -- Semi-structured aggregates -----------------------------------------
+      object_agg       = function(key, value)
+        dbplyr::sql_expr(OBJECT_AGG(!!key, !!value), con = con),
+      array_agg        = function(x)
+        dbplyr::sql_expr(ARRAY_AGG(!!x), con = con),
+      array_unique_agg = function(x)
+        dbplyr::sql_expr(ARRAY_UNIQUE_AGG(!!x), con = con),
+
+      # -- Approximate aggregates ---------------------------------------------
+      approx_count_distinct = function(x)
+        dbplyr::sql_expr(APPROX_COUNT_DISTINCT(!!x), con = con),
+      approx_percentile     = function(x, p)
+        dbplyr::sql_expr(APPROX_PERCENTILE(!!x, !!p), con = con),
+
+      # -- Statistical (mode_val to avoid shadowing base::mode) ---------------
+      mode_val = function(x) dbplyr::sql_expr(MODE(!!x), con = con)
+    ),
+
+    base$window
+  )
 }
 
 db_connection_describe.SnowflakeConnection <- function(con) {

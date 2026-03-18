@@ -89,7 +89,11 @@ con <- dbConnect(
 
 ### Snowflake Workspace Notebooks
 
-Inside a Workspace Notebook, authentication is automatic:
+Inside a Workspace Notebook, authentication is automatic via the built-in
+SPCS OAuth token. If you use `setup_notebook()` from `sfnb_setup.py`, it
+exports the necessary environment variables (`SNOWFLAKE_ACCOUNT`,
+`SNOWFLAKE_USER`, etc.) so that `dbConnect(Snowflake())` works with zero
+configuration:
 
 ```r
 con <- dbConnect(Snowflake())
