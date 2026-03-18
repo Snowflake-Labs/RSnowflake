@@ -115,6 +115,18 @@ tbl(con, "my_table") |>
   collect()
 
 
+## ----dbplyr-snowflake---------------------------------------------------------
+# Example: parse JSON and aggregate into arrays
+tbl(con, "events") |>
+  mutate(payload = parse_json(raw_json)) |>
+  group_by(event_type) |>
+  summarise(
+    user_ids = array_unique_agg(user_id),
+    n_approx = approx_count_distinct(user_id)
+  ) |>
+  collect()
+
+
 ## ----transactions, eval = FALSE-----------------------------------------------
 ## # Not yet supported via SQL API v2 -- included for reference:
 ## dbBegin(con)

@@ -543,6 +543,184 @@ translated to Snowflake SQL and executed lazily:</p>
 <span id="cb14-5"><a href="#cb14-5" tabindex="-1"></a>  <span class="fu">select</span>(name, score) <span class="sc">|&gt;</span></span>
 <span id="cb14-6"><a href="#cb14-6" tabindex="-1"></a>  <span class="fu">arrange</span>(<span class="fu">desc</span>(score)) <span class="sc">|&gt;</span></span>
 <span id="cb14-7"><a href="#cb14-7" tabindex="-1"></a>  <span class="fu">collect</span>()</span></code></pre></div>
+<div id="snowflake-specific-sql-translations" class="section level3">
+<h3>Snowflake-Specific SQL Translations</h3>
+<p>In addition to the ~150 scalar and ~30 aggregate translations that
+dbplyr provides for Snowflake (e.g. <code>floor_date()</code> to
+<code>DATE_TRUNC</code>, <code>paste0()</code> to
+<code>ARRAY_TO_STRING</code>, <code>ifelse()</code> to
+<code>IFF</code>), RSnowflake adds translations for 17 Snowflake
+functions that dbplyr does not cover. These let you use
+Snowflake-specific SQL functions directly in dplyr pipelines without
+falling back to <code>sql()</code>.</p>
+<p><strong>Semi-structured data</strong> – work with VARIANT, OBJECT,
+and ARRAY columns:</p>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>R function</th>
+<th>Snowflake SQL</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>parse_json(x)</code></td>
+<td><code>PARSE_JSON(x)</code></td>
+<td>Parse a JSON string into VARIANT</td>
+</tr>
+<tr class="even">
+<td><code>try_parse_json(x)</code></td>
+<td><code>TRY_PARSE_JSON(x)</code></td>
+<td>Safe parse (returns NULL on error)</td>
+</tr>
+<tr class="odd">
+<td><code>typeof(x)</code></td>
+<td><code>TYPEOF(x)</code></td>
+<td>Inspect the type of a VARIANT value</td>
+</tr>
+<tr class="even">
+<td><code>is_object(x)</code></td>
+<td><code>IS_OBJECT(x)</code></td>
+<td>Check if VARIANT is an OBJECT</td>
+</tr>
+<tr class="odd">
+<td><code>is_array(x)</code></td>
+<td><code>IS_ARRAY(x)</code></td>
+<td>Check if VARIANT is an ARRAY</td>
+</tr>
+<tr class="even">
+<td><code>is_integer(x)</code></td>
+<td><code>IS_INTEGER(x)</code></td>
+<td>Check if VARIANT is an INTEGER</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Array operations:</strong></p>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>R function</th>
+<th>Snowflake SQL</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>array_size(x)</code></td>
+<td><code>ARRAY_SIZE(x)</code></td>
+<td>Length of an ARRAY</td>
+</tr>
+<tr class="even">
+<td><code>array_contains(arr, val)</code></td>
+<td><code>ARRAY_CONTAINS(val, arr)</code></td>
+<td>Test membership (note: arg order swapped for you)</td>
+</tr>
+<tr class="odd">
+<td><code>array_slice(arr, from, to)</code></td>
+<td><code>ARRAY_SLICE(arr, from, to)</code></td>
+<td>Slice an ARRAY</td>
+</tr>
+</tbody>
+</table>
+<p><strong>String and utility:</strong></p>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>R function</th>
+<th>Snowflake SQL</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>regexp_substr(x, pattern)</code></td>
+<td><code>REGEXP_SUBSTR(x, pattern, ...)</code></td>
+<td>Extract substring by regex (supports all 5 Snowflake args)</td>
+</tr>
+<tr class="even">
+<td><code>hash(...)</code></td>
+<td><code>HASH(...)</code></td>
+<td>Deterministic hash of one or more columns</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Aggregate functions</strong> – use inside
+<code>summarise()</code>:</p>
+<table>
+<colgroup>
+<col width="33%" />
+<col width="33%" />
+<col width="33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>R function</th>
+<th>Snowflake SQL</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>object_agg(key, value)</code></td>
+<td><code>OBJECT_AGG(key, value)</code></td>
+<td>Build a JSON object from grouped key-value pairs</td>
+</tr>
+<tr class="even">
+<td><code>array_agg(x)</code></td>
+<td><code>ARRAY_AGG(x)</code></td>
+<td>Collect values into an ARRAY</td>
+</tr>
+<tr class="odd">
+<td><code>array_unique_agg(x)</code></td>
+<td><code>ARRAY_UNIQUE_AGG(x)</code></td>
+<td>Collect distinct values into an ARRAY</td>
+</tr>
+<tr class="even">
+<td><code>approx_count_distinct(x)</code></td>
+<td><code>APPROX_COUNT_DISTINCT(x)</code></td>
+<td>HyperLogLog approximate distinct count</td>
+</tr>
+<tr class="odd">
+<td><code>approx_percentile(x, p)</code></td>
+<td><code>APPROX_PERCENTILE(x, p)</code></td>
+<td>Approximate percentile</td>
+</tr>
+<tr class="even">
+<td><code>mode_val(x)</code></td>
+<td><code>MODE(x)</code></td>
+<td>Statistical mode (<code>mode_val</code> avoids shadowing
+<code>base::mode()</code>)</td>
+</tr>
+</tbody>
+</table>
+<div class="sourceCode" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a><span class="co"># Example: parse JSON and aggregate into arrays</span></span>
+<span id="cb15-2"><a href="#cb15-2" tabindex="-1"></a><span class="fu">tbl</span>(con, <span class="st">&quot;events&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb15-3"><a href="#cb15-3" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">payload =</span> <span class="fu">parse_json</span>(raw_json)) <span class="sc">|&gt;</span></span>
+<span id="cb15-4"><a href="#cb15-4" tabindex="-1"></a>  <span class="fu">group_by</span>(event_type) <span class="sc">|&gt;</span></span>
+<span id="cb15-5"><a href="#cb15-5" tabindex="-1"></a>  <span class="fu">summarise</span>(</span>
+<span id="cb15-6"><a href="#cb15-6" tabindex="-1"></a>    <span class="at">user_ids =</span> <span class="fu">array_unique_agg</span>(user_id),</span>
+<span id="cb15-7"><a href="#cb15-7" tabindex="-1"></a>    <span class="at">n_approx =</span> <span class="fu">approx_count_distinct</span>(user_id)</span>
+<span id="cb15-8"><a href="#cb15-8" tabindex="-1"></a>  ) <span class="sc">|&gt;</span></span>
+<span id="cb15-9"><a href="#cb15-9" tabindex="-1"></a>  <span class="fu">collect</span>()</span></code></pre></div>
+<p>For the full list of dbplyr’s built-in translations, see
+<code>vignette(&quot;translation-function&quot;, package = &quot;dbplyr&quot;)</code>.</p>
+</div>
 </div>
 <div id="transactions" class="section level2">
 <h2>Transactions</h2>
@@ -551,14 +729,14 @@ per-request and does not currently support session-based transactions.
 Calling <code>dbBegin()</code> will raise an informative error.
 Session-based transaction support is planned for a future release that
 uses the internal Snowflake protocol.</p>
-<div class="sourceCode" id="cb15"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" tabindex="-1"></a><span class="co"># Not yet supported via SQL API v2 -- included for reference:</span></span>
-<span id="cb15-2"><a href="#cb15-2" tabindex="-1"></a><span class="fu">dbBegin</span>(con)</span>
-<span id="cb15-3"><a href="#cb15-3" tabindex="-1"></a><span class="fu">dbExecute</span>(con, <span class="st">&quot;INSERT INTO accounts VALUES (1, 100.00)&quot;</span>)</span>
-<span id="cb15-4"><a href="#cb15-4" tabindex="-1"></a><span class="fu">dbCommit</span>(con)</span></code></pre></div>
+<div class="sourceCode" id="cb16"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" tabindex="-1"></a><span class="co"># Not yet supported via SQL API v2 -- included for reference:</span></span>
+<span id="cb16-2"><a href="#cb16-2" tabindex="-1"></a><span class="fu">dbBegin</span>(con)</span>
+<span id="cb16-3"><a href="#cb16-3" tabindex="-1"></a><span class="fu">dbExecute</span>(con, <span class="st">&quot;INSERT INTO accounts VALUES (1, 100.00)&quot;</span>)</span>
+<span id="cb16-4"><a href="#cb16-4" tabindex="-1"></a><span class="fu">dbCommit</span>(con)</span></code></pre></div>
 </div>
 <div id="disconnecting" class="section level2">
 <h2>Disconnecting</h2>
-<div class="sourceCode" id="cb16"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb16-1"><a href="#cb16-1" tabindex="-1"></a><span class="fu">dbDisconnect</span>(con)</span></code></pre></div>
+<div class="sourceCode" id="cb17"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" tabindex="-1"></a><span class="fu">dbDisconnect</span>(con)</span></code></pre></div>
 </div>
 
 

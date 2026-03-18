@@ -226,6 +226,67 @@ tbl(con, "my_table") |>
   collect()
 ```
 
+### Snowflake-Specific SQL Translations
+
+In addition to the ~150 scalar and ~30 aggregate translations that dbplyr
+provides for Snowflake (e.g. `floor_date()` to `DATE_TRUNC`, `paste0()` to
+`ARRAY_TO_STRING`, `ifelse()` to `IFF`), RSnowflake adds translations for
+17 Snowflake functions that dbplyr does not cover. These let you use
+Snowflake-specific SQL functions directly in dplyr pipelines without
+falling back to `sql()`.
+
+**Semi-structured data** -- work with VARIANT, OBJECT, and ARRAY columns:
+
+| R function | Snowflake SQL | Description |
+|---|---|---|
+| `parse_json(x)` | `PARSE_JSON(x)` | Parse a JSON string into VARIANT |
+| `try_parse_json(x)` | `TRY_PARSE_JSON(x)` | Safe parse (returns NULL on error) |
+| `typeof(x)` | `TYPEOF(x)` | Inspect the type of a VARIANT value |
+| `is_object(x)` | `IS_OBJECT(x)` | Check if VARIANT is an OBJECT |
+| `is_array(x)` | `IS_ARRAY(x)` | Check if VARIANT is an ARRAY |
+| `is_integer(x)` | `IS_INTEGER(x)` | Check if VARIANT is an INTEGER |
+
+**Array operations:**
+
+| R function | Snowflake SQL | Description |
+|---|---|---|
+| `array_size(x)` | `ARRAY_SIZE(x)` | Length of an ARRAY |
+| `array_contains(arr, val)` | `ARRAY_CONTAINS(val, arr)` | Test membership (note: arg order swapped for you) |
+| `array_slice(arr, from, to)` | `ARRAY_SLICE(arr, from, to)` | Slice an ARRAY |
+
+**String and utility:**
+
+| R function | Snowflake SQL | Description |
+|---|---|---|
+| `regexp_substr(x, pattern)` | `REGEXP_SUBSTR(x, pattern, ...)` | Extract substring by regex (supports all 5 Snowflake args) |
+| `hash(...)` | `HASH(...)` | Deterministic hash of one or more columns |
+
+**Aggregate functions** -- use inside `summarise()`:
+
+| R function | Snowflake SQL | Description |
+|---|---|---|
+| `object_agg(key, value)` | `OBJECT_AGG(key, value)` | Build a JSON object from grouped key-value pairs |
+| `array_agg(x)` | `ARRAY_AGG(x)` | Collect values into an ARRAY |
+| `array_unique_agg(x)` | `ARRAY_UNIQUE_AGG(x)` | Collect distinct values into an ARRAY |
+| `approx_count_distinct(x)` | `APPROX_COUNT_DISTINCT(x)` | HyperLogLog approximate distinct count |
+| `approx_percentile(x, p)` | `APPROX_PERCENTILE(x, p)` | Approximate percentile |
+| `mode_val(x)` | `MODE(x)` | Statistical mode (`mode_val` avoids shadowing `base::mode()`) |
+
+```{r dbplyr-snowflake}
+# Example: parse JSON and aggregate into arrays
+tbl(con, "events") |>
+  mutate(payload = parse_json(raw_json)) |>
+  group_by(event_type) |>
+  summarise(
+    user_ids = array_unique_agg(user_id),
+    n_approx = approx_count_distinct(user_id)
+  ) |>
+  collect()
+```
+
+For the full list of dbplyr's built-in translations, see
+`vignette("translation-function", package = "dbplyr")`.
+
 ## Transactions
 
 **Note:** The Snowflake SQL API v2 is stateless per-request and does not

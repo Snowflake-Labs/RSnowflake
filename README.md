@@ -12,7 +12,9 @@ ODBC, JDBC, or Python.
 
 - Full [DBI](https://dbi.r-dbi.org/) compliance -- works with any package
   that speaks DBI
-- **dbplyr** integration -- write dplyr pipelines that execute as Snowflake SQL
+- **dbplyr** integration -- write dplyr pipelines that execute as Snowflake SQL,
+  with 17 Snowflake-specific translations (semi-structured data, arrays,
+  approximate aggregates) beyond what dbplyr provides out of the box
 - **RStudio / Positron Connections Pane** -- browse databases, schemas, tables,
   and columns visually
 - **Authentication**: JWT key-pair, Programmatic Access Token (PAT), OAuth,
