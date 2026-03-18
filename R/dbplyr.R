@@ -70,7 +70,15 @@ sql_translation.SnowflakeConnection <- function(con) {
       mode_val = function(x) dbplyr::sql_expr(MODE(!!x), con = con)
     ),
 
-    base$window
+    dbplyr::sql_translator(
+      .parent = base$window,
+      approx_count_distinct = dbplyr::win_absent("approx_count_distinct"),
+      approx_percentile     = dbplyr::win_absent("approx_percentile"),
+      array_agg             = dbplyr::win_absent("array_agg"),
+      array_unique_agg      = dbplyr::win_absent("array_unique_agg"),
+      mode_val              = dbplyr::win_absent("mode_val"),
+      object_agg            = dbplyr::win_absent("object_agg")
+    )
   )
 }
 
