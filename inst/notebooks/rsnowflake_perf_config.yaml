@@ -45,7 +45,7 @@ languages:
       adbc: true
       duckdb: false
     tarballs:
-      RSnowflake: "https://github.com/Snowflake-Labs/RSnowflake/releases/download/v0.2.0/RSnowflake_0.2.0.tar.gz"
+      RSnowflake: "https://github.com/Snowflake-Labs/RSnowflake/releases/download/v0.2.1/RSnowflake_0.2.1.tar.gz"
 
   scala:
     enabled: false

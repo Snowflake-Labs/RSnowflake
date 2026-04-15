@@ -1,3 +1,11 @@
+# RSnowflake 0.2.1
+
+## Documentation / Workspace
+
+* **`inst/notebooks/rsnowflake_config.yaml`** -- commented `mirrors` and
+  `auth_secret` template aligned with snowflakeR / sfnb-multilang for
+  Workspace Notebook Secrets (Artifactory bootstrap).
+
 # RSnowflake 0.2.0
 
 ## New Features
