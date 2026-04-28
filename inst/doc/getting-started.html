@@ -375,19 +375,67 @@ Snowflake Python connector and Snowflake CLI.</p>
 </div>
 <div id="programmatic-access-token-pat" class="section level3">
 <h3>Programmatic Access Token (PAT)</h3>
-<p>Set the <code>SNOWFLAKE_PAT</code> environment variable, or pass the
-token directly:</p>
-<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>con <span class="ot">&lt;-</span> <span class="fu">dbConnect</span>(</span>
-<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  <span class="fu">Snowflake</span>(),</span>
-<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="at">account =</span> <span class="st">&quot;myaccount&quot;</span>,</span>
-<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>  <span class="at">token   =</span> <span class="fu">Sys.getenv</span>(<span class="st">&quot;SNOWFLAKE_PAT&quot;</span>)</span>
-<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>)</span></code></pre></div>
+<p>A <strong>Programmatic Access Token</strong> is useful for
+automation, CI, or hosts where you do not want to store a long-lived
+private key. Create a PAT in <strong>Snowsight &gt; Admin &gt; Security
+&gt; Programmatic Access Tokens</strong> (wording may vary by account),
+then either set <strong><code>SNOWFLAKE_PAT</code></strong> for the R
+process or pass <strong><code>token =</code></strong> explicitly. Treat
+tokens like passwords: prefer environment variables or a secrets
+manager, and never commit them to git.</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="co"># Set SNOWFLAKE_PAT in the shell or secrets manager before starting R.</span></span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>con <span class="ot">&lt;-</span> <span class="fu">dbConnect</span>(</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>  <span class="fu">Snowflake</span>(),</span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="at">account =</span> <span class="st">&quot;myaccount&quot;</span>,</span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>  <span class="at">token   =</span> <span class="fu">Sys.getenv</span>(<span class="st">&quot;SNOWFLAKE_PAT&quot;</span>)</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>)</span></code></pre></div>
+<p>PATs use Snowflake’s
+<strong><code>PROGRAMMATIC_ACCESS_TOKEN</code></strong> authentication
+path in the driver. In <strong>Snowflake Workspace Notebooks</strong>,
+the managed <strong>SPCS OAuth</strong> session is usually preferred for
+<code>dbConnect(Snowflake())</code>; reserve PATs for REST-style or
+external tooling that cannot use the Workspace session.</p>
 </div>
 <div id="snowflake-workspace-notebooks" class="section level3">
 <h3>Snowflake Workspace Notebooks</h3>
-<p>Inside a Workspace Notebook, authentication is automatic – the
-session token is read from the environment:</p>
-<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>con <span class="ot">&lt;-</span> <span class="fu">dbConnect</span>(<span class="fu">Snowflake</span>())</span></code></pre></div>
+<p>In Workspace you run R inside <strong><code>%%R</code> cells</strong>
+on a <strong>Python kernel</strong> (via rpy2). RSnowflake still speaks
+HTTPS to Snowflake; the Workspace runtime injects the same
+<strong>session / OAuth</strong> material the Snowpark Python client
+uses.</p>
+<p>For zero-config DBI from R, run a small Python bootstrap cell first.
+The <strong><code>setup_notebook()</code></strong> function from
+<strong><code>sfnb_setup.py</code></strong> (bundled with the <a href="https://github.com/Snowflake-Labs/snowflake-notebook-multilang"><code>snowflake-notebook-multilang</code></a>
+toolkit and with <strong><code>snowflakeR</code></strong>’s
+<code>inst/notebooks/</code> examples) installs R, sets session context,
+and <strong>exports environment variables</strong> so
+<code>Snowflake()</code> can connect without a
+<code>connections.toml</code> file, for example:</p>
+<ul>
+<li><strong><code>SNOWFLAKE_ACCOUNT</code></strong>,
+<strong><code>SNOWFLAKE_USER</code></strong>,
+<strong><code>SNOWFLAKE_HOST</code></strong></li>
+<li><strong><code>SNOWFLAKE_ROLE</code></strong>,
+<strong><code>SNOWFLAKE_WAREHOUSE</code></strong>,
+<strong><code>SNOWFLAKE_DATABASE</code></strong>,
+<strong><code>SNOWFLAKE_SCHEMA</code></strong> when your bootstrap or
+session defines them</li>
+</ul>
+<p>After the Snowpark session exists in Python, open R and connect:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a><span class="fu">library</span>(DBI)</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="fu">library</span>(RSnowflake)</span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a>con <span class="ot">&lt;-</span> <span class="fu">dbConnect</span>(<span class="fu">Snowflake</span>())</span></code></pre></div>
+<p>If <code>dbConnect()</code> fails from a <code>%%R</code> cell,
+confirm the <strong>Python</strong> setup cell ran successfully and that
+you are not mixing profiles intended for your laptop with the Workspace
+session. For ML + notebook ergonomics (context, EAI, <code>%%R</code>
+patterns), see
+<strong><code>vignette(&quot;workspace-notebooks&quot;, package = &quot;snowflakeR&quot;)</code></strong>.</p>
+<p>For <strong>EAI</strong>, <strong>Go / adbcsnowflake
+installs</strong>, and the internal SPCS gateway in more detail, see
+<strong><code>vignette(&quot;workspace-rsnowflake&quot;, package = &quot;RSnowflake&quot;)</code></strong>.</p>
 </div>
 </div>
 <div id="running-queries" class="section level2">
@@ -500,23 +548,58 @@ table-level operations.</p>
 </div>
 <div id="adbc-acceleration-optional" class="section level2">
 <h2>ADBC Acceleration (optional)</h2>
-<p>When the <code>adbcsnowflake</code> and
-<code>adbcdrivermanager</code> packages are installed, RSnowflake can
-use the ADBC (Arrow Database Connectivity) backend for Arrow-native
-reads and PUT + COPY INTO bulk writes. This is particularly beneficial
-for large datasets outside of Workspace Notebooks.</p>
+<p>When the <strong><code>adbcsnowflake</code></strong> and
+<strong><code>adbcdrivermanager</code></strong> packages are installed
+(and on Linux/macOS the <strong>Go toolchain</strong> is available for
+building the Go driver), RSnowflake can use <strong>ADBC</strong> (Arrow
+Database Connectivity) for Arrow-native reads and <strong>PUT + COPY
+INTO</strong> bulk writes.</p>
+<p><strong>Where it helps</strong></p>
+<table>
+<colgroup>
+<col width="40%" />
+<col width="59%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Environment</th>
+<th>Typical behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><strong>Local / Posit / CI</strong></td>
+<td><code>upload_method = &quot;auto&quot;</code> often picks ADBC for large
+<code>dbWriteTable()</code> / <code>dbAppendTable()</code> when the
+driver is installed; good for wide tables and Arrow-heavy
+pipelines.</td>
+</tr>
+<tr class="even">
+<td><strong>Workspace Notebooks</strong></td>
+<td>ADBC (when installed) can use the <strong>internal SPCS
+gateway</strong> (<code>SNOWFLAKE_HOST</code>) with the container OAuth
+token – no public <code>*.snowflakecomputing.com</code> URL is required
+for Snowflake traffic. Bulk writes may still route via Snowpark
+(<code>write_pandas</code>) when <code>&quot;auto&quot;</code> prefers that path;
+see the table in <strong>Bulk Write Methods</strong> above.</td>
+</tr>
+</tbody>
+</table>
 <div class="sourceCode" id="cb12"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a><span class="co"># Check if ADBC is available</span></span>
 <span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a>has_adbc <span class="ot">&lt;-</span> <span class="fu">requireNamespace</span>(<span class="st">&quot;adbcsnowflake&quot;</span>, <span class="at">quietly =</span> <span class="cn">TRUE</span>)</span>
 <span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a><span class="fu">cat</span>(<span class="st">&quot;ADBC available:&quot;</span>, has_adbc, <span class="st">&quot;</span><span class="sc">\n</span><span class="st">&quot;</span>)</span>
 <span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a></span>
-<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="co"># ADBC is used automatically in &#39;auto&#39; mode for large writes</span></span>
-<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="co"># Force it for reads:</span></span>
+<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="co"># ADBC participates automatically in &#39;auto&#39; for large writes when installed</span></span>
+<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="co"># Force the query backend for reads:</span></span>
 <span id="cb12-7"><a href="#cb12-7" tabindex="-1"></a><span class="fu">options</span>(<span class="at">RSnowflake.backend =</span> <span class="st">&quot;adbc&quot;</span>)</span>
 <span id="cb12-8"><a href="#cb12-8" tabindex="-1"></a>df <span class="ot">&lt;-</span> <span class="fu">dbGetQuery</span>(con, <span class="st">&quot;SELECT * FROM big_table&quot;</span>)</span>
 <span id="cb12-9"><a href="#cb12-9" tabindex="-1"></a><span class="fu">options</span>(<span class="at">RSnowflake.backend =</span> <span class="st">&quot;auto&quot;</span>)</span></code></pre></div>
-<p>See <code>WORKSPACE_ADBC.md</code> in the package for
-Workspace-specific ADBC constraints (EAI network rules, PAT auth, stage
-host whitelisting).</p>
+<p><strong>Workspace constraints</strong> (EAI / network rules for
+installing <code>adbcsnowflake</code>, Go module download hosts,
+internal gateway behaviour) are documented in
+<strong><code>WORKSPACE_ADBC.md</code></strong> at the root of the
+RSnowflake package source (same content in the GitHub repository). Read
+that file before enabling ADBC inside locked-down Workspace images.</p>
 </div>
 <div id="arrow-interface" class="section level2">
 <h2>Arrow Interface</h2>

@@ -1,6 +1,6 @@
 Package: RSnowflake
 Title: DBI Interface to 'Snowflake'
-Version: 0.2.1
+Version: 0.2.2
 Authors@R: c(
     person("Snowflake Inc.", role = c("aut", "cre", "cph"),
            email = "snowflake-r@snowflake.com"))

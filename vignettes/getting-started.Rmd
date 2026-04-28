@@ -63,9 +63,16 @@ con <- dbConnect(Snowflake(), name = "my_profile")
 
 ### Programmatic Access Token (PAT)
 
-Set the `SNOWFLAKE_PAT` environment variable, or pass the token directly:
+A **Programmatic Access Token** is useful for automation, CI, or hosts where
+you do not want to store a long-lived private key. Create a PAT in
+**Snowsight > Admin > Security > Programmatic Access Tokens** (wording may
+vary by account), then either set **`SNOWFLAKE_PAT`** for the R process or
+pass **`token =`** explicitly. Treat tokens like passwords: prefer
+environment variables or a secrets manager, and never commit them to git.
 
 ```{r connect-pat}
+# Set SNOWFLAKE_PAT in the shell or secrets manager before starting R.
+
 con <- dbConnect(
   Snowflake(),
   account = "myaccount",
@@ -73,13 +80,44 @@ con <- dbConnect(
 )
 ```
 
+PATs use Snowflake's **`PROGRAMMATIC_ACCESS_TOKEN`** authentication path in
+the driver. In **Snowflake Workspace Notebooks**, the managed **SPCS OAuth**
+session is usually preferred for `dbConnect(Snowflake())`; reserve PATs for
+REST-style or external tooling that cannot use the Workspace session.
+
 ### Snowflake Workspace Notebooks
 
-Inside a Workspace Notebook, authentication is automatic -- the session
-token is read from the environment:
+In Workspace you run R inside **`%%R` cells** on a **Python kernel** (via
+rpy2). RSnowflake still speaks HTTPS to Snowflake; the Workspace runtime
+injects the same **session / OAuth** material the Snowpark Python client uses.
+
+For zero-config DBI from R, run a small Python bootstrap cell first. The
+**`setup_notebook()`** function from **`sfnb_setup.py`** (bundled with the
+[`snowflake-notebook-multilang`](https://github.com/Snowflake-Labs/snowflake-notebook-multilang)
+toolkit and with **`snowflakeR`**'s `inst/notebooks/` examples) installs R,
+sets session context, and **exports environment variables** so `Snowflake()`
+can connect without a `connections.toml` file, for example:
+
+- **`SNOWFLAKE_ACCOUNT`**, **`SNOWFLAKE_USER`**, **`SNOWFLAKE_HOST`**
+- **`SNOWFLAKE_ROLE`**, **`SNOWFLAKE_WAREHOUSE`**, **`SNOWFLAKE_DATABASE`**,
+  **`SNOWFLAKE_SCHEMA`** when your bootstrap or session defines them
+
+After the Snowpark session exists in Python, open R and connect:
+
 ```{r connect-workspace}
+library(DBI)
+library(RSnowflake)
+
 con <- dbConnect(Snowflake())
 ```
+
+If `dbConnect()` fails from a `%%R` cell, confirm the **Python** setup cell ran
+successfully and that you are not mixing profiles intended for your laptop
+with the Workspace session. For ML + notebook ergonomics (context, EAI,
+`%%R` patterns), see **`vignette("workspace-notebooks", package = "snowflakeR")`**.
+
+For **EAI**, **Go / adbcsnowflake installs**, and the internal SPCS gateway in
+more detail, see **`vignette("workspace-rsnowflake", package = "RSnowflake")`**.
 
 ## Running Queries
 
@@ -174,25 +212,35 @@ controls the implicit casing applied in table-level operations.
 
 ## ADBC Acceleration (optional)
 
-When the `adbcsnowflake` and `adbcdrivermanager` packages are installed,
-RSnowflake can use the ADBC (Arrow Database Connectivity) backend for
-Arrow-native reads and PUT + COPY INTO bulk writes. This is particularly
-beneficial for large datasets outside of Workspace Notebooks.
+When the **`adbcsnowflake`** and **`adbcdrivermanager`** packages are installed
+(and on Linux/macOS the **Go toolchain** is available for building the Go
+driver), RSnowflake can use **ADBC** (Arrow Database Connectivity) for
+Arrow-native reads and **PUT + COPY INTO** bulk writes.
+
+**Where it helps**
+
+| Environment | Typical behaviour |
+|-------------|-------------------|
+| **Local / Posit / CI** | `upload_method = "auto"` often picks ADBC for large `dbWriteTable()` / `dbAppendTable()` when the driver is installed; good for wide tables and Arrow-heavy pipelines. |
+| **Workspace Notebooks** | ADBC (when installed) can use the **internal SPCS gateway** (`SNOWFLAKE_HOST`) with the container OAuth token -- no public `*.snowflakecomputing.com` URL is required for Snowflake traffic. Bulk writes may still route via Snowpark (`write_pandas`) when `"auto"` prefers that path; see the table in **Bulk Write Methods** above. |
 
 ```{r adbc}
 # Check if ADBC is available
 has_adbc <- requireNamespace("adbcsnowflake", quietly = TRUE)
 cat("ADBC available:", has_adbc, "\n")
 
-# ADBC is used automatically in 'auto' mode for large writes
-# Force it for reads:
+# ADBC participates automatically in 'auto' for large writes when installed
+# Force the query backend for reads:
 options(RSnowflake.backend = "adbc")
 df <- dbGetQuery(con, "SELECT * FROM big_table")
 options(RSnowflake.backend = "auto")
 ```
 
-See `WORKSPACE_ADBC.md` in the package for Workspace-specific ADBC
-constraints (EAI network rules, PAT auth, stage host whitelisting).
+**Workspace constraints** (EAI / network rules for installing `adbcsnowflake`,
+Go module download hosts, internal gateway behaviour) are documented in
+**`WORKSPACE_ADBC.md`** at the root of the RSnowflake package source (same
+content in the GitHub repository). Read that file before enabling ADBC
+inside locked-down Workspace images.
 
 ## Arrow Interface
 

@@ -24,6 +24,8 @@ con <- dbConnect(Snowflake(), name = "my_profile")
 
 
 ## ----connect-pat--------------------------------------------------------------
+# Set SNOWFLAKE_PAT in the shell or secrets manager before starting R.
+
 con <- dbConnect(
   Snowflake(),
   account = "myaccount",
@@ -32,6 +34,9 @@ con <- dbConnect(
 
 
 ## ----connect-workspace--------------------------------------------------------
+library(DBI)
+library(RSnowflake)
+
 con <- dbConnect(Snowflake())
 
 
@@ -93,8 +98,8 @@ dbListFields(con, "my_table")
 has_adbc <- requireNamespace("adbcsnowflake", quietly = TRUE)
 cat("ADBC available:", has_adbc, "\n")
 
-# ADBC is used automatically in 'auto' mode for large writes
-# Force it for reads:
+# ADBC participates automatically in 'auto' for large writes when installed
+# Force the query backend for reads:
 options(RSnowflake.backend = "adbc")
 df <- dbGetQuery(con, "SELECT * FROM big_table")
 options(RSnowflake.backend = "auto")

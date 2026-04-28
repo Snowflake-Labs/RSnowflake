@@ -1,3 +1,19 @@
+# RSnowflake 0.2.2
+
+## Documentation
+
+* **Version** bump to **0.2.2** (patch release; documentation and packaging
+  alignment with the monorepo release cadence).
+* **`vignettes/getting-started.Rmd`** -- expanded PAT, Snowflake Workspace
+  (`setup_notebook()`, env vars, `%%R` / Snowpark prerequisites), and ADBC
+  (when it helps, Workspace vs local, pointer to `WORKSPACE_ADBC.md`).
+* **`README.md`** -- link from the Workspace subsection to the vignette for
+  the full PAT / env / ADBC discussion; new **Vignettes** subsection listing
+  `getting-started` and `workspace-rsnowflake`.
+* **`vignettes/workspace-rsnowflake.Rmd`** -- Workspace-focused note: `%%R`
+  bootstrap order, optional ADBC / Go / EAI, `SNOWFLAKE_HOST`, pointers to
+  `WORKSPACE_ADBC.md` and snowflakeR's workspace vignette.
+
 # RSnowflake 0.2.1
 
 ## Documentation / Workspace

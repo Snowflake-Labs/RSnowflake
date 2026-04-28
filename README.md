@@ -1,5 +1,13 @@
 # RSnowflake
 
+> **Community Project -- Not Officially Supported**
+> This is a community-developed project from
+> [Snowflake Labs](https://github.com/Snowflake-Labs), not an official
+> Snowflake offering. It is provided **as-is** without warranty or official
+> Snowflake support. Use it for prototyping and experimentation; production
+> use is at your own risk. Feedback, bug reports, and contributions are
+> welcome via [GitHub Issues](https://github.com/Snowflake-Labs/RSnowflake/issues).
+
 A DBI-compliant R interface to [Snowflake](https://www.snowflake.com) that
 connects directly via the Snowflake SQL API over HTTPS. No dependency on
 ODBC, JDBC, or Python.
@@ -32,6 +40,21 @@ ODBC, JDBC, or Python.
 # install.packages("pak")
 pak::pak("Snowflake-Labs/RSnowflake")
 ```
+
+## Vignettes
+
+After installation, browse locally with `browseVignettes("RSnowflake")` or open:
+
+```r
+vignette("getting-started", package = "RSnowflake")
+vignette("workspace-rsnowflake", package = "RSnowflake")
+```
+
+**getting-started** covers DBI usage, authentication (JWT, PAT, Workspace),
+bulk writes, ADBC options, dbplyr, and Arrow helpers. **workspace-rsnowflake**
+focuses on Workspace Notebooks: Python/`%%R` bootstrap order, EAI and installs
+for optional ADBC, the internal `SNOWFLAKE_HOST` gateway, and links to
+`WORKSPACE_ADBC.md` on GitHub.
 
 ## Quick Start
 
@@ -100,6 +123,10 @@ configuration:
 ```r
 con <- dbConnect(Snowflake())
 ```
+
+For PAT details, the **`SNOWFLAKE_*`** variables `setup_notebook()` exports,
+`%%R` / Snowpark prerequisites, and **ADBC** behaviour in Workspace versus
+local R, see **`vignette("getting-started", package = "RSnowflake")`**.
 
 ## Identifier Case Handling
 

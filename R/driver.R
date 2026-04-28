@@ -95,7 +95,8 @@ setMethod("dbConnect", "SnowflakeDriver",
         account          <- account %||% profile$account
         user             <- user %||% profile$user
         authenticator    <- authenticator %||% profile$authenticator
-        private_key_path <- private_key_path %||% profile$private_key_path
+        private_key_path <- private_key_path %||%
+          profile$private_key_path %||% profile$private_key_file
         database         <- if (nzchar(database)) database else (profile$database %||% "")
         schema           <- if (nzchar(schema)) schema else (profile$schema %||% "")
         warehouse        <- if (nzchar(warehouse)) warehouse else (profile$warehouse %||% "")

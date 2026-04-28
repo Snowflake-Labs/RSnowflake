@@ -33,14 +33,22 @@
         )
       },
       listObjects = function(database = NULL, schema = NULL, ...) {
-        .pane_list_objects(conn, database, schema)
+        # Look up from current namespace so pkgload::load_all picks up changes
+        # without requiring disconnect/reconnect.
+        fn <- get0(".pane_list_objects", envir = asNamespace("RSnowflake"),
+                   ifnotfound = .pane_list_objects)
+        fn(conn, database, schema)
       },
       listColumns = function(database = NULL, schema = NULL, table = NULL, ...) {
-        .pane_list_columns(conn, database, schema, table)
+        fn <- get0(".pane_list_columns", envir = asNamespace("RSnowflake"),
+                   ifnotfound = .pane_list_columns)
+        fn(conn, database, schema, table)
       },
       previewObject = function(rowLimit, database = NULL, schema = NULL,
                                table = NULL, ...) {
-        .pane_preview(conn, database, schema, table, rowLimit)
+        fn <- get0(".pane_preview", envir = asNamespace("RSnowflake"),
+                   ifnotfound = .pane_preview)
+        fn(conn, database, schema, table, rowLimit)
       },
       connectionObject = conn
     )
@@ -78,28 +86,72 @@
   paste(parts, collapse = "\n")
 }
 
+#' Run a query for the Connections Pane, forcing REST API (bypassing ADBC).
+#' ADBC (Go driver) can return incorrect results for SHOW metadata commands.
+#' @noRd
+.pane_query <- function(conn, sql) {
+  old <- getOption("RSnowflake.backend")
+  options(RSnowflake.backend = "rest")
+  on.exit(options(RSnowflake.backend = old), add = TRUE)
+  dbGetQuery(conn, sql)
+}
+
 #' List objects for the Connections Pane hierarchy
 #' @noRd
 .pane_list_objects <- function(conn, database, schema) {
+  empty <- data.frame(name = character(0), type = character(0))
+
   if (is.null(database)) {
-    df <- dbGetQuery(conn, "SHOW DATABASES")
-    if (nrow(df) == 0L) return(data.frame(name = character(0), type = character(0)))
+    df <- tryCatch(.pane_query(conn, "SHOW DATABASES"), error = function(e) NULL)
+    if (is.null(df) || nrow(df) == 0L) return(empty)
     name_col <- which(tolower(names(df)) == "name")
-    return(data.frame(name = df[[name_col]], type = "database"))
+    if (length(name_col) == 0L) return(empty)
+    return(data.frame(name = df[[name_col[1]]], type = "database"))
   }
+
   if (is.null(schema)) {
-    qdb <- dbQuoteIdentifier(conn, database)
-    df <- dbGetQuery(conn, paste0("SHOW SCHEMAS IN DATABASE ", qdb))
-    if (nrow(df) == 0L) return(data.frame(name = character(0), type = character(0)))
+    safe_db <- toupper(gsub('"', '', database))
+    df <- tryCatch(
+      .pane_query(conn, paste0('SHOW SCHEMAS IN DATABASE "', safe_db, '"')),
+      error = function(e) {
+        tryCatch(
+          .pane_query(conn, paste0(
+            "SELECT SCHEMA_NAME AS NAME FROM \"", safe_db,
+            "\".INFORMATION_SCHEMA.SCHEMATA ",
+            "WHERE CATALOG_NAME = '", safe_db, "' ",
+            "AND SCHEMA_NAME != 'INFORMATION_SCHEMA' ",
+            "ORDER BY SCHEMA_NAME")),
+          error = function(e2) NULL
+        )
+      }
+    )
+    if (is.null(df) || nrow(df) == 0L) return(empty)
     name_col <- which(tolower(names(df)) == "name")
-    return(data.frame(name = df[[name_col]], type = "schema"))
+    if (length(name_col) == 0L) return(empty)
+    schemas <- df[[name_col[1]]]
+    schemas <- schemas[toupper(schemas) != "INFORMATION_SCHEMA"]
+    if (length(schemas) == 0L) return(empty)
+    return(data.frame(name = schemas, type = "schema"))
   }
-  qdb <- dbQuoteIdentifier(conn, database)
-  qsch <- dbQuoteIdentifier(conn, schema)
-  df <- dbGetQuery(conn, paste0("SHOW TABLES IN SCHEMA ", qdb, ".", qsch))
-  if (nrow(df) == 0L) return(data.frame(name = character(0), type = character(0)))
+
+  safe_db  <- toupper(gsub('"', '', database))
+  safe_sch <- toupper(gsub('"', '', schema))
+  df <- tryCatch(
+    .pane_query(conn, paste0('SHOW OBJECTS IN SCHEMA "', safe_db, '"."', safe_sch, '"')),
+    error = function(e) {
+      tryCatch(
+        .pane_query(conn, paste0("SELECT TABLE_NAME AS NAME FROM \"",
+                                 safe_db, "\".INFORMATION_SCHEMA.TABLES ",
+                                 "WHERE TABLE_SCHEMA = '", safe_sch, "' ",
+                                 "ORDER BY TABLE_NAME")),
+        error = function(e2) NULL
+      )
+    }
+  )
+  if (is.null(df) || nrow(df) == 0L) return(empty)
   name_col <- which(tolower(names(df)) == "name")
-  data.frame(name = df[[name_col]], type = "table")
+  if (length(name_col) == 0L) return(empty)
+  data.frame(name = df[[name_col[1]]], type = "table")
 }
 
 #' List columns for the Connections Pane column preview
@@ -110,7 +162,7 @@
     dbQuoteIdentifier(conn, schema), ".",
     dbQuoteIdentifier(conn, table)
   )
-  df <- dbGetQuery(conn, paste0("SHOW COLUMNS IN TABLE ", fqn))
+  df <- .pane_query(conn, paste0("SHOW COLUMNS IN TABLE ", fqn))
   if (nrow(df) == 0L) {
     return(data.frame(name = character(0), type = character(0)))
   }
@@ -133,5 +185,5 @@
     dbQuoteIdentifier(conn, schema), ".",
     dbQuoteIdentifier(conn, table)
   )
-  dbGetQuery(conn, paste0("SELECT * FROM ", fqn, " LIMIT ", as.integer(rowLimit)))
+  .pane_query(conn, paste0("SELECT * FROM ", fqn, " LIMIT ", as.integer(rowLimit)))
 }
