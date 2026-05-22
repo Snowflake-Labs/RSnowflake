@@ -1,6 +1,4 @@
-# RSnowflake
-
-<img src="man/figures/logo.png" align="right" height="139" />
+# RSnowflake <img src="man/figures/logo.png" align="right" height="139" />
 
 > **Community Project -- Not Officially Supported**
 > This is a community-developed project from
@@ -9,6 +7,8 @@
 > Snowflake support. Use it for prototyping and experimentation; production
 > use is at your own risk. Feedback, bug reports, and contributions are
 > welcome via [GitHub Issues](https://github.com/Snowflake-Labs/RSnowflake/issues).
+
+> **Author:** [Simon Field](https://www.linkedin.com/in/fieldy6961) — SnowCAT
 
 A DBI-compliant R interface to [Snowflake](https://www.snowflake.com) that
 connects directly via the Snowflake SQL API over HTTPS. No dependency on
