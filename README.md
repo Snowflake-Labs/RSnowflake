@@ -1,5 +1,7 @@
 # RSnowflake
 
+<img src="man/figures/logo.png" align="right" height="139" />
+
 > **Community Project -- Not Officially Supported**
 > This is a community-developed project from
 > [Snowflake Labs](https://github.com/Snowflake-Labs), not an official
@@ -31,6 +33,11 @@ ODBC, JDBC, or Python.
   connector and CLI
 - **Arrow interface** -- `dbGetQueryArrow()` / `dbFetchArrow()` via `nanoarrow`
   for DBI Arrow method compatibility
+- **Optional ADBC backend** -- install `adbcsnowflake` + `adbcdrivermanager`
+  for true server-side Arrow reads (zero serialization overhead) and high-performance
+  bulk writes (`PUT` + `COPY INTO`). When ADBC is available, `dbGetQueryArrow()` and
+  `dbWriteTable()` automatically use it; otherwise they fall back transparently to
+  the SQL API
 - **Snowflake Workspace Notebooks** -- auto-detects the session token for
   zero-config auth
 
@@ -162,8 +169,9 @@ DBI::dbGetQuery(dbi_con, "SELECT 1")
 - A Snowflake account
 
 Optional R packages: `openssl` + `jose` (JWT auth), `RcppTOML`
-(connections.toml), `nanoarrow` (Arrow interface), `dbplyr` + `dplyr`,
-`snowflakeauth`.
+(connections.toml), `nanoarrow` (Arrow interface), `adbcsnowflake` +
+`adbcdrivermanager` (ADBC backend for bulk Arrow reads/writes),
+`dbplyr` + `dplyr`, `snowflakeauth`.
 
 ## License
 
