@@ -8,6 +8,8 @@
 > use is at your own risk. Feedback, bug reports, and contributions are
 > welcome via [GitHub Issues](https://github.com/Snowflake-Labs/RSnowflake/issues).
 
+> **Author:** [Simon Field](https://www.linkedin.com/in/fieldy6961) — SnowCAT
+
 A DBI-compliant R interface to [Snowflake](https://www.snowflake.com) that
 connects directly via the Snowflake SQL API over HTTPS. No dependency on
 ODBC, JDBC, or Python.
@@ -15,10 +17,6 @@ ODBC, JDBC, or Python.
 > **Companion package:** For Snowflake ML features (Model Registry, Feature
 > Store, Datasets, SPCS model serving), see
 > [**snowflakeR**](https://github.com/Snowflake-Labs/snowflakeR).
-
-## Implementation guide
-
-**[The Hitchhiker's Guide to R in Snowflake](https://snowflake-labs.github.io/snowflakeR/)** — RSnowflake chapters (connect, query, Workspace) and the full three-package narrative. Hosted in the [snowflakeR](https://github.com/Snowflake-Labs/snowflakeR) repository.
 
 ## Features
 
